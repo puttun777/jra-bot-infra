@@ -24,6 +24,8 @@ JRA Bot リプレースのインフラ側リポジトリ（Terraform / GitHub Ac
 | docs/REQUIREMENTS.md | インフラ固有要件（アプリ要件は web が正本） |
 | docs/PLAN.md | インフラ担当タスク（全体計画は web の PLAN.md） |
 | docs/PROGRESS.md / DECISIONS.md | 本リポジトリの進捗/判断 |
-| docs/ARCHITECTURE.md | クラウド構成案・運用モード制御 |
+| docs/ARCHITECTURE.md | GCP 構成（設計採用）・セキュリティ境界 |
+| docs/OPERATIONS_DESIGN.md | 運用モード・start/stop/status の確定設計 |
 | docs/CONTRACTS.md | web の CONTRACTS.md への参照と infra 側の固有契約 |
-後続作成: CLOUD_COSTS.md, VERSIONS.md, OPERATIONS.md, TEST_RESULTS.md
+| docs/CLOUD_COSTS.md | 費用比較・見積り（§10 が最新） |
+後続作成: OPERATIONS.md（Runbook, 第5段階）, TEST_RESULTS.md

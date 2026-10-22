@@ -1,38 +1,41 @@
 # PROGRESS（jra-bot-infra）
-最終更新: 2026-10-22（第1段階 / T1.6 完了、T1.8 事前調査完了）
+最終更新: 2026-10-22（Stage 1-D①: T1.7・T1.8・T1.18 完了）
 
 ## 現在の段階
-第1段階 進行中。完了: T1.6（費用比較）、T1.8 の事前調査。**次はユーザーによる T1.7（クラウド選定）の判断**。
+第1段階の infra 担当分は**設計確定**（T1.6/T1.7/T1.8/T1.18）。次は web 側の **Stage 1-D②（T1.10 アプリ全体設計の確定）**。その後 第2段階（web 基盤）→ 第5段階（infra 実装）。
 
-## 完了
-- 第0段階一式（main 取り込み済み）。Stage 0 の未解決事項「main 不在で PR 不可」は**解消**（web/infra とも main 存在、web PR #1 はマージ済みを確認）。
-- `docs/CLOUD_COSTS.md`: GCP/AWS/Azure（+Lambda/App Runner/外部DBaaS 等の評価）、条件A/B/C の月額（円・税・無料枠有無）、停止時残存課金、停止/再開の制約、推奨と代替
-- `docs/ARCHITECTURE.md`: 運用モード制御の事前調査要約を追記
-- `docs/DECISIONS.md`: I-005〜I-010、`docs/PLAN.md`: T1.6 完了、T1.14/T1.15 追加
+## 今回の完了（claude/stage1-finalize-infra）
+- **T1.7**: GCP を**設計上採用**（I-011。契約・課金の承認ではない）。Cloud SQL = Enterprise（明示）+ db-g1-small、MySQL **8.4 LTS 暫定**（9.7 は互換検証後）、プライベート IP のみ、SSD 20GB、バックアップ 7 世代（I-012/I-013）。`ARCHITECTURE.md` を GCP 構成で全面更新（コンポーネント設定、Cloud SQL 選定表、セキュリティ境界、組織なし IAP、デプロイ、代替案）
+- **T1.8**: `OPERATIONS_DESIGN.md`（新規）: 4 モードと遷移規則、GCS 正本（CAS・リース・版管理・履歴）、署名付きビーコン、各リソースの操作、start/stop/status の手順と失敗時の扱い、影響マトリクスと apply 前ガード、自動修復しない方針、監視、手動復旧、IAM、検証ゲート G-OPS-1〜9
+- **T1.18**: `CONTRACTS.md` を web 0.3.0 に同期（実現方法の対応表）。**差異 D1〜D12** を web 側修正事項として整理、`release-manifest.json` のスキーマ案
+- **費用**: `CLOUD_COSTS.md` §10（無料枠除外を基準に再計算: 通常 ≈ ¥8,550/月、全停止 ≈ ¥1,200/月〔東京推定〕）
+- `DECISIONS.md` I-011〜I-022、`PLAN.md`（検証ゲート表）、`REQUIREMENTS.md`
 
-## 主な結果（詳細は CLOUD_COSTS.md）
-| 条件A（税抜/月） | G1 GCP標準 ≈ ¥6,700 | G1m GCP最小 ≈ ¥3,050（条件付き） | A1 AWS Lambda+RDS ≈ ¥4,700 | A2 AWS Fargate+ALB ≈ ¥12,000 | Z1 Azure ≈ ¥4,900（参考・低信頼） |
-|---|---|---|---|---|---|
-| 条件B（全停止） | ≈ ¥1,050 | ≈ ¥1,050 | ≈ ¥690 | ≈ ¥690 | ≈ ¥1,200 |
-| 条件C（100人/1,000人） | ¥13.9k / ¥37.7k | — | ¥8.7k / ¥22.1k | ¥15.7k / ¥26.3k | ¥8.9k / ¥31.7k |
-- 停止の性質: **GCP Cloud SQL は手動停止のまま継続**（自動起動の記述なし）/ **AWS RDS は7日で自動起動** / **Azure MySQL は30日で自動起動** / Aurora Serverless v2 は自動停止だが接続で再開。いずれもストレージ課金は残る。
-- 推奨（決定ではない）: **GCP G1**。理由は要件適合の素直さ・運用性・拡張時の作り直しの少なさ。費用最優先なら G1m（要確認）か AWS A1。
-- AWS App Runner は新規受付停止のため除外。AWS bot を Lambda にするのは15分制限で不可。
+## 確認できたこと / できなかったこと
+| 項目 | 結果 |
+|---|---|
+| 共有コアは Enterprise のみ、8.4/9.7 の既定は Enterprise Plus | 公式ドキュメントの検索抜粋で確認 |
+| 停止中は「開始するまで停止のまま」、ストレージ・IP は課金継続 | 同上 |
+| 組織なしでも直接 IAP 可、外部ユーザーはカスタム OAuth クライアント（Terraform で作成不可） | 同上 |
+| Logging 50GiB/月無料、Monitoring アラート課金は 2027-09 から、Direct VPC egress はコネクタ課金なし | 公式ページ/抜粋 |
+| **Cloud SQL 東京の正式単価** | **未取得**（料金ページの地域切替が JS 動的。ヘッドレスブラウザでも選択できず）→ Iowa×1.30 推定のまま |
+| MySQL 8.4 での db-g1-small 提供可否、停止中のメンテナンス挙動、IAP 料金、プライベート IP の停止中課金、Flyway の 8.4/9.7 正式対応 | **未確認** → ゲート |
 
 ## テスト結果
-該当なし（調査・試算のみ）。価格は AWS Price List API（東京）と GCP 公式料金ページから取得。
+該当なし（設計のみ。課金リソース・Terraform・GCP 契約の変更なし）。
 
-## 未完了・未解決（ユーザー判断/確認が必要）
-1. **T1.7 クラウド選定**（推奨 G1 / 代替 G1m・A1）。
-2. 前提の確認: Cloud SQL 東京実額（推定 Iowa×1.30）、共有コアの MySQL 9.7/8.4 可否、直接 IAP 料金、停止中メンテナンス（CLOUD_COSTS §7）。GCP を選ぶ場合、料金計算機で確認可能（課金なし）。
-3. Stage 0 から継続: 既存実 DB/モデルの所在、Windows PC、JRA-VAN 規約（T1.2）、GCP プロジェクト/請求の有無。
-4. 為替(156円)・税・DB サイズ(20GB)・bot 時間は仮定。
-5. web 側で必要: CONTRACTS に「STOPPED=拒否/到達不能→エージェント送信しない」追記、web PLAN.md の T1.6 チェック（T1.15）。
+## 未解決（ユーザー）
+1. **G-COST-1 / G-DB-1（課金不要）**: GCP 料金計算機またはコンソールの Cloud SQL 作成画面（作成はしない）で、東京・Enterprise・MySQL 8.4・db-g1-small の単価と選択可否を確認。
+2. GCP プロジェクト/請求アカウントの有無（第5段階まで不要）。予算アラートの設定（請求側の作業）。
+3. web からの Artifact Registry への push 権限（第5段階で WIF を追加するか）。
+4. 継続: JRA-VAN 問い合わせ（クラウドへ実データを置く可否）、2 人目の契約。
 
-## 次に実行する内容
-- ユーザー: T1.7 の判断（上記）。
-- その後 Claude: T1.8 確定（採用クラウド向け）→ T1.10（web 側と設計確定）。T1.2/T1.3/T1.5/T1.9 は web 側セッションで継続可能（クラウド選定と独立）。
+## Stage 1-D② への引継ぎ（web リポジトリで実施）
+- **CONTRACTS の修正 D1〜D12**（モードのフィールド統一、ビーコン鍵の保管場所、`/internal/*` の機械認証、ModeProvider の読み方、エージェント最終接続の GCS 写し、start 時の migrate、release-manifest スキーマ、DB 接続/プール、Jobs 終了コード、MySQL 8.4 暫定、STOPPED 中 dashboard 到達不能、ml-train の DB 権限）→ contract 0.4.0
+- web `docs/PLAN.md` の T1.7/T1.8/T1.18 を完了に更新（本 PR は infra のみ）
+- web `VERSIONS.md` / `DECISIONS.md` D-015 を I-013 に合わせて更新
+- T1.10 で確定すべき web 側の案（D-018〜D-044）のうち infra に影響するもの: `:ingest` の独立デプロイ、`export-dataset` タスク、`ml-train` イメージ、tenant_id（バケットのパス分割）
 
 ## Git
-- ブランチ: `claude/stage1-cloud-costs`（base: main 95f06de）
+- ブランチ: `claude/stage1-finalize-infra`（base: main 6a97272）
 - コミット/PR: push 後に記録
