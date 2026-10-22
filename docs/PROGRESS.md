@@ -1,16 +1,38 @@
 # PROGRESS（jra-bot-infra）
-最終更新: 2026-10-22
+最終更新: 2026-10-22（第1段階 / T1.6 完了、T1.8 事前調査完了）
+
 ## 現在の段階
-第0段階 完了（PR のみブロック）。次は第1段階（T1.6 費用比較 / T1.8 運用モード検証）。
+第1段階 進行中。完了: T1.6（費用比較）、T1.8 の事前調査。**次はユーザーによる T1.7（クラウド選定）の判断**。
+
 ## 完了
-CLAUDE.md, docs/{REQUIREMENTS,PLAN,PROGRESS,DECISIONS,ARCHITECTURE,CONTRACTS}.md, .gitignore。クラウド操作・課金リソース作成は一切なし。
-## 未完了
-PR 作成（`main` 不在）。第1段階以降。
+- 第0段階一式（main 取り込み済み）。Stage 0 の未解決事項「main 不在で PR 不可」は**解消**（web/infra とも main 存在、web PR #1 はマージ済みを確認）。
+- `docs/CLOUD_COSTS.md`: GCP/AWS/Azure（+Lambda/App Runner/外部DBaaS 等の評価）、条件A/B/C の月額（円・税・無料枠有無）、停止時残存課金、停止/再開の制約、推奨と代替
+- `docs/ARCHITECTURE.md`: 運用モード制御の事前調査要約を追記
+- `docs/DECISIONS.md`: I-005〜I-010、`docs/PLAN.md`: T1.6 完了、T1.14/T1.15 追加
+
+## 主な結果（詳細は CLOUD_COSTS.md）
+| 条件A（税抜/月） | G1 GCP標準 ≈ ¥6,700 | G1m GCP最小 ≈ ¥3,050（条件付き） | A1 AWS Lambda+RDS ≈ ¥4,700 | A2 AWS Fargate+ALB ≈ ¥12,000 | Z1 Azure ≈ ¥4,900（参考・低信頼） |
+|---|---|---|---|---|---|
+| 条件B（全停止） | ≈ ¥1,050 | ≈ ¥1,050 | ≈ ¥690 | ≈ ¥690 | ≈ ¥1,200 |
+| 条件C（100人/1,000人） | ¥13.9k / ¥37.7k | — | ¥8.7k / ¥22.1k | ¥15.7k / ¥26.3k | ¥8.9k / ¥31.7k |
+- 停止の性質: **GCP Cloud SQL は手動停止のまま継続**（自動起動の記述なし）/ **AWS RDS は7日で自動起動** / **Azure MySQL は30日で自動起動** / Aurora Serverless v2 は自動停止だが接続で再開。いずれもストレージ課金は残る。
+- 推奨（決定ではない）: **GCP G1**。理由は要件適合の素直さ・運用性・拡張時の作り直しの少なさ。費用最優先なら G1m（要確認）か AWS A1。
+- AWS App Runner は新規受付停止のため除外。AWS bot を Lambda にするのは15分制限で不可。
+
 ## テスト結果
-該当なし（文書のみ）。
-## 未解決事項
-web の PROGRESS.md「未解決事項」と共通。特に main の初期化、GCP プロジェクト/請求の有無、Windows エージェント用 PC。
+該当なし（調査・試算のみ）。価格は AWS Price List API（東京）と GCP 公式料金ページから取得。
+
+## 未完了・未解決（ユーザー判断/確認が必要）
+1. **T1.7 クラウド選定**（推奨 G1 / 代替 G1m・A1）。
+2. 前提の確認: Cloud SQL 東京実額（推定 Iowa×1.30）、共有コアの MySQL 9.7/8.4 可否、直接 IAP 料金、停止中メンテナンス（CLOUD_COSTS §7）。GCP を選ぶ場合、料金計算機で確認可能（課金なし）。
+3. Stage 0 から継続: 既存実 DB/モデルの所在、Windows PC、JRA-VAN 規約（T1.2）、GCP プロジェクト/請求の有無。
+4. 為替(156円)・税・DB サイズ(20GB)・bot 時間は仮定。
+5. web 側で必要: CONTRACTS に「STOPPED=拒否/到達不能→エージェント送信しない」追記、web PLAN.md の T1.6 チェック（T1.15）。
+
 ## 次に実行する内容
-T1.6 `CLOUD_COSTS.md`（公式価格を確認日付きで）、T1.8 STOPPED 実現方式の公式仕様確認。
+- ユーザー: T1.7 の判断（上記）。
+- その後 Claude: T1.8 確定（採用クラウド向け）→ T1.10（web 側と設計確定）。T1.2/T1.3/T1.5/T1.9 は web 側セッションで継続可能（クラウド選定と独立）。
+
 ## Git
-- ブランチ: `claude/stage0-bootstrap`（main 未作成）
+- ブランチ: `claude/stage1-cloud-costs`（base: main 95f06de）
+- コミット/PR: push 後に記録
