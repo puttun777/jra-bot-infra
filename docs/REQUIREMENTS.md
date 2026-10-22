@@ -14,6 +14,7 @@
 - 含める費用: 計算、DB、ストレージ、ネットワーク、バックアップ、監視、レジストリ、GitHub Actions 等。公式価格・確認日・通貨・税・換算条件を記録。**無料枠と新規契約クレジットを分離**。停止中に残る料金、DB の停止/自動再起動仕様（例: 一定期間後の自動再起動の有無）を必ず確認。
 
 ## 3. 運用モードと一括起動/停止
+- （2026-10-22 確定）モードは NORMAL / STARTING / STOPPING / STOPPED。確定設計は `OPERATIONS_DESIGN.md`。
 - GitHub Actions `workflow_dispatch` で `start` / `stop` / `status` をそれぞれ 1 回の実行で。
 - 起動: DB 復帰 → Web 復帰 → 正常性確認 → bot 制御再開。停止: 新規実行抑止 → Web・ジョブ停止 → DB アクセス終了 → DB 停止。
 - desired（希望モード）と actual（実リソース状態）を区別して表示。一部失敗時の状態表示、安全な再実行（冪等）、排他制御（`concurrency`）。
