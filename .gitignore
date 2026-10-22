@@ -1,0 +1,39 @@
+# Build
+build/
+.gradle/
+.kotlin/
+out/
+*.class
+*.jar
+!gradle/wrapper/gradle-wrapper.jar
+# IDE
+.idea/
+*.iml
+.vscode/
+# Secrets / env
+.env
+.env.*
+*.pem
+*.key
+*.tfvars
+service-account*.json
+application-local.*
+# Data / models / generated (never commit)
+data/
+*.sqlite
+*.sqlite3
+*.db
+*.parquet
+*.pkl
+*.joblib
+*.npz
+logs/
+*.log
+# OS
+.DS_Store
+# Terraform
+.terraform/
+*.tfstate
+*.tfstate.*
+crash.log
+*.tfplan
