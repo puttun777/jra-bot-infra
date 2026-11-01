@@ -23,10 +23,10 @@
 - [x] **T5.0 infra 文書を web CONTRACTS 0.4.15 に同期**（2026-11-01。CONTRACTS.md §5、I-023）
 
 ## 第5段階（実装）
-- [ ] T5.1 Terraform 基盤（tfstate バケット、WIF、AR、Secret、VPC、バケット 4 種）
-- [ ] T5.2 Cloud SQL / Cloud Run（dashboard・ingest）/ Jobs / Scheduler / IAP（作成時は停止側の初期値: I-017）
-- [ ] T5.3 deploy ワークフロー（release-manifest 入力、NORMAL 必須、migrate → 更新）
-- [ ] T5.4 ops-start / ops-stop / ops-status（OPERATIONS_DESIGN §5〜§7、Job Summary）
-- [ ] T5.5 apply 前ガード（plan JSON 検査）と非干渉テスト
-- [ ] T5.6 監視（定期 status + Discord、予算アラートはユーザー作業）、ロールバック、OPERATIONS.md（Runbook）
+- [x] T5.1 Terraform 基盤（tfstate バケット、WIF、AR、Secret、VPC、バケット 4 種）  **（2026-11-01 実装。コード済み・validate/mock 済み。実 plan/apply は本人承認後）**
+- [x] T5.2 Cloud SQL / Cloud Run（dashboard・ingest）/ Jobs / Scheduler / IAP（作成時は停止側の初期値: I-017）  **（2026-11-01 実装。同上）**
+- [x] T5.3 deploy ワークフロー（release-manifest 入力、NORMAL 必須、migrate → 更新）  **（2026-11-01 実装。deploy.yml + ops deploy（偽 GCP で試験済み。GHA 上は未実行））**
+- [x] T5.4 ops-start / ops-stop / ops-status（OPERATIONS_DESIGN §5〜§7、Job Summary）  **（2026-11-01 実装。ops-start/stop/status（偽 GCP で試験済み。GHA 上は未実行））**
+- [x] T5.5 apply 前ガード（plan JSON 検査）と非干渉テスト  **（2026-11-01 実装。plan_guard（試験済み）+ terraform-plan/apply）**
+- [x] T5.6 監視（定期 status + Discord、予算アラートはユーザー作業）、ロールバック、OPERATIONS.md（Runbook）  **（2026-11-01 実装。OPERATIONS.md・定期 status + Discord。予算は本人設定）**
 - apply・課金リソース作成は常にユーザー承認後

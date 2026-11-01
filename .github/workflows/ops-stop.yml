@@ -1,0 +1,65 @@
+name: ops-stop
+# 停止（mode=STOPPING → Scheduler 停止 → 排出 → 受付停止 → DB 停止 → mode=STOPPED）。設計: docs/OPERATIONS_DESIGN.md §6。本人が手動で実行する。
+on:
+  workflow_dispatch:
+    inputs:
+      reason:
+        description: 理由（必須）
+        required: true
+      drain_timeout_min:
+        description: 実行中 Job の排出を待つ分数
+        default: "15"
+      take_backup:
+        description: DB 停止前にオンデマンドバックアップを取る
+        type: boolean
+        default: false
+      force:
+        description: 遷移規則を曲げて実行する（理由必須。通常は使わない）
+        type: boolean
+        default: false
+      dry_run:
+        description: 検査とリース取得だけ（資源は変更しない）
+        type: boolean
+        default: false
+permissions:
+  contents: read
+  id-token: write
+concurrency:
+  group: ops-prod
+  cancel-in-progress: false
+jobs:
+  stop:
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    environment: ops
+    env:
+      PROJECT_ID: ${{ vars.GCP_PROJECT_ID }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405 # v6.2.0
+        with:
+          python-version: "3.13"
+      - run: pip install -r ops/requirements.txt
+      - uses: ./.github/actions/gcp-auth
+        with:
+          workload_identity_provider: ${{ vars.GCP_WIF_PROVIDER }}
+          service_account: ${{ vars.GCP_SA_OPS }}
+          project_id: ${{ vars.GCP_PROJECT_ID }}
+      - name: stop
+        id: run
+        working-directory: ops
+        env:
+          REASON: ${{ inputs.reason }}
+          DRAIN: ${{ inputs.drain_timeout_min }}
+        run: |
+          args=(stop --project "$PROJECT_ID" --actor "$GITHUB_ACTOR" --run-id "$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT" --run-url "$GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID" --reason "$REASON")
+          args+=(--drain-timeout-min "$DRAIN")
+          [ "${{ inputs.take_backup }}" = true ] && args+=(--take-backup)
+          [ "${{ inputs.force }}" = true ] && args+=(--force)
+          [ "${{ inputs.dry_run }}" = true ] && args+=(--dry-run)
+          python -m jrabot_ops.cli "${args[@]}" | tee -a "$GITHUB_STEP_SUMMARY"
+      - name: 実状態の確認（status と同じ計測）
+        if: always() && inputs.dry_run != true
+        working-directory: ops
+        run: python -m jrabot_ops.cli status --project "$PROJECT_ID" | tee -a "$GITHUB_STEP_SUMMARY"

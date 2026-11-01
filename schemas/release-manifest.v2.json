@@ -1,0 +1,190 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/puttun777/jra-bot-web/docs/schemas/release-manifest.v2.json",
+  "title": "release-manifest (production, schema_version 2)",
+  "description": "CONTRACTS §10。デプロイ（infra）が入力にする本番用マニフェスト。仮値・未生成のイメージ・プレビューは受け付けない。ドライラン成果物は release-manifest-preview.v2.json（別スキーマ）で、このスキーマには適合しない",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "release",
+    "git_sha",
+    "built_at",
+    "contract_version",
+    "agent_protocol",
+    "images",
+    "flyway",
+    "required_schema_version",
+    "rollback",
+    "model_schema_versions",
+    "feature_schemas",
+    "feature_schema_hash",
+    "runtime",
+    "notes"
+  ],
+  "properties": {
+    "schema_version": {
+      "const": 2
+    },
+    "release": {
+      "type": "string",
+      "pattern": "^[0-9]{4}\\.(0?[1-9]|1[0-2])\\.[0-9]+$",
+      "description": "カレンダー版 YYYY.M.N（例 2026.11.0）"
+    },
+    "git_sha": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{40}$",
+      "description": "コミット SHA（40 桁の小文字 16 進）"
+    },
+    "built_at": {
+      "type": "string",
+      "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$",
+      "description": "UTC（秒まで）"
+    },
+    "contract_version": {
+      "type": "string",
+      "pattern": "^0\\.4\\.[0-9]+$",
+      "description": "web CONTRACTS の版。このスキーマは 0.4.x 用（版を上げるときはスキーマも改訂する）"
+    },
+    "agent_protocol": {
+      "const": 1
+    },
+    "images": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "dashboard",
+        "ingest",
+        "bot",
+        "db-migration",
+        "ml-train"
+      ],
+      "properties": {
+        "dashboard": {
+          "type": "string",
+          "pattern": "^asia-northeast1-docker\\.pkg\\.dev/[a-z][a-z0-9-]{4,28}[a-z0-9]/jra-bot/dashboard@sha256:[0-9a-f]{64}$",
+          "description": "Artifact Registry の dashboard イメージ。digest 必須（タグ・ローカル image ID は不可）"
+        },
+        "ingest": {
+          "type": "string",
+          "pattern": "^asia-northeast1-docker\\.pkg\\.dev/[a-z][a-z0-9-]{4,28}[a-z0-9]/jra-bot/ingest@sha256:[0-9a-f]{64}$",
+          "description": "Artifact Registry の ingest イメージ。digest 必須（タグ・ローカル image ID は不可）"
+        },
+        "bot": {
+          "type": "string",
+          "pattern": "^asia-northeast1-docker\\.pkg\\.dev/[a-z][a-z0-9-]{4,28}[a-z0-9]/jra-bot/bot@sha256:[0-9a-f]{64}$",
+          "description": "Artifact Registry の bot イメージ。digest 必須（タグ・ローカル image ID は不可）"
+        },
+        "db-migration": {
+          "type": "string",
+          "pattern": "^asia-northeast1-docker\\.pkg\\.dev/[a-z][a-z0-9-]{4,28}[a-z0-9]/jra-bot/db-migration@sha256:[0-9a-f]{64}$",
+          "description": "Artifact Registry の db-migration イメージ。digest 必須（タグ・ローカル image ID は不可）"
+        },
+        "ml-train": {
+          "type": "string",
+          "pattern": "^asia-northeast1-docker\\.pkg\\.dev/[a-z][a-z0-9-]{4,28}[a-z0-9]/jra-bot/ml-train@sha256:[0-9a-f]{64}$",
+          "description": "Artifact Registry の ml-train イメージ。digest 必須（タグ・ローカル image ID は不可）"
+        }
+      }
+    },
+    "flyway": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "latest_version",
+        "baseline"
+      ],
+      "properties": {
+        "latest_version": {
+          "type": "string",
+          "pattern": "^[0-9]+(\\.[0-9]+)*$",
+          "description": "db-migration が適用する最新の Versioned マイグレーションの版"
+        },
+        "baseline": {
+          "type": "string",
+          "pattern": "^[0-9]+(\\.[0-9]+)*$",
+          "description": "最初の版"
+        }
+      }
+    },
+    "required_schema_version": {
+      "type": "string",
+      "pattern": "^[0-9]+(\\.[0-9]+)*$",
+      "description": "各アプリのイメージに焼き込まれた REQUIRED_SCHEMA_VERSION（CI で一致を検査）"
+    },
+    "rollback": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "min_app_release"
+      ],
+      "properties": {
+        "min_app_release": {
+          "type": "string",
+          "pattern": "^[0-9]{4}\\.(0?[1-9]|1[0-2])\\.[0-9]+$",
+          "description": "このリリースのスキーマ上で動くと検証済みの最も古いアプリのリリース。検証済みの値（自分自身か rollback-verified.json の記録）だけ"
+        }
+      }
+    },
+    "model_schema_versions": {
+      "type": "array",
+      "items": {
+        "type": "integer",
+        "minimum": 1
+      },
+      "minItems": 1,
+      "uniqueItems": true
+    },
+    "feature_schemas": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "calibration",
+        "alpha",
+        "market"
+      ],
+      "description": "特徴量スキーマごとの hash（Kotlin の FeatureSchema が唯一の定義。calibration=40 次元、alpha=35 次元、market=5 次元）。監査用に名前付きで持つ",
+      "properties": {
+        "calibration": {
+          "type": "string",
+          "pattern": "^sha256:[0-9a-f]{64}$"
+        },
+        "alpha": {
+          "type": "string",
+          "pattern": "^sha256:[0-9a-f]{64}$"
+        },
+        "market": {
+          "type": "string",
+          "pattern": "^sha256:[0-9a-f]{64}$"
+        }
+      }
+    },
+    "feature_schema_hash": {
+      "type": "string",
+      "pattern": "^sha256:[0-9a-f]{64}$",
+      "description": "feature_schemas の正準 JSON（キー順・空白なし・UTF-8）の SHA-256 に sha256: を付けたもの（スキーマの集合全体の単一の値。infra は等価比較にだけ使う）。CONTRACTS §10 の feature_schema_hash の定義"
+    },
+    "runtime": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "jdk",
+        "python"
+      ],
+      "properties": {
+        "jdk": {
+          "const": "25"
+        },
+        "python": {
+          "type": "string",
+          "pattern": "^3\\.[0-9]+\\.[0-9]+$",
+          "description": "ml-train の Python"
+        }
+      }
+    },
+    "notes": {
+      "type": "string",
+      "maxLength": 2000
+    }
+  }
+}

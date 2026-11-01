@@ -1,0 +1,48 @@
+name: ops-status
+# 状態確認（読み取り専用）。手動 + 毎日 1 回。不整合は失敗にして Discord のエラー Webhook に通知する（自動修復はしない）。設計: OPERATIONS_DESIGN §7。
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: "17 0 * * *" # 09:17 JST
+permissions:
+  contents: read
+  id-token: write
+concurrency:
+  group: ops-status
+  cancel-in-progress: false
+jobs:
+  status:
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    environment: ops
+    env:
+      PROJECT_ID: ${{ vars.GCP_PROJECT_ID }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405 # v6.2.0
+        with:
+          python-version: "3.13"
+      - run: pip install -r ops/requirements.txt
+      - uses: ./.github/actions/gcp-auth
+        with:
+          workload_identity_provider: ${{ vars.GCP_WIF_PROVIDER }}
+          service_account: ${{ vars.GCP_SA_OPS }}
+          project_id: ${{ vars.GCP_PROJECT_ID }}
+      - name: status
+        id: st
+        working-directory: ops
+        run: |
+          set +e
+          python -m jrabot_ops.cli status --project "$PROJECT_ID" | tee "$RUNNER_TEMP/status.md" >> "$GITHUB_STEP_SUMMARY"
+          echo "code=${PIPESTATUS[0]}" >> "$GITHUB_OUTPUT"
+      - name: 不整合を Discord に通知（Webhook は Secret Manager から実行時に取得。ログに出さない）
+        if: steps.st.outputs.code != '0'
+        run: |
+          url="$(gcloud secrets versions access latest --secret=discord-error-webhook)"
+          echo "::add-mask::${url}"
+          body="$(python3 -c 'import json,sys;print(json.dumps({"content":"jra-bot ops-status: 不整合を検出\n"+sys.argv[1]+"\n"+sys.argv[2]}))' "$GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID" "$(grep -E '❌' "$RUNNER_TEMP/status.md" | head -10)")"
+          curl -fsS -H 'Content-Type: application/json' -d "$body" "$url" >/dev/null || echo "::warning::通知に失敗"
+      - name: 不整合があれば失敗にする
+        if: steps.st.outputs.code != '0'
+        run: exit 1

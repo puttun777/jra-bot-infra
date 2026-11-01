@@ -1,0 +1,46 @@
+name: ci
+on:
+  pull_request:
+  push:
+    branches: [main]
+permissions:
+  contents: read
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+jobs:
+  ops-tests:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405 # v6.2.0
+        with:
+          python-version: "3.13"
+      - run: pip install -r ops/requirements.txt
+      - name: ops の単体試験（偽の GCP・GCS。実 GCP には接続しない）
+        working-directory: ops
+        run: python -m unittest discover -s tests -t . -v
+  terraform:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: ./.github/actions/setup-terraform
+      - name: fmt / validate / mock 試験（実 GCP の plan ではない）
+        working-directory: terraform
+        run: |
+          terraform fmt -check -recursive
+          terraform init -backend=false -input=false -lockfile=readonly
+          terraform validate
+          terraform test
+      - name: 秘密・状態ファイルの混入がないこと
+        run: |
+          if git ls-files | grep -E '\.(tfstate|tfvars)(\.|$)|\.tfstate\.backup$|(^|/)\.terraform/'; then echo "::error::tfstate/tfvars/.terraform が追跡されている"; exit 1; fi
+  ci-gate:
+    needs: [ops-tests, terraform]
+    if: always()
+    runs-on: ubuntu-latest
+    steps:
+      - name: 必要なジョブがすべて success であること（skipped を成功扱いにしない）
+        run: |
+          echo '${{ toJSON(needs) }}'
+          [ "${{ needs.ops-tests.result }}" = success ] && [ "${{ needs.terraform.result }}" = success ]

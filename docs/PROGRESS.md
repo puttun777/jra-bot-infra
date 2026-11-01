@@ -1,5 +1,16 @@
 # PROGRESS（jra-bot-infra）
-最終更新: 2026-11-01（T5.0: web CONTRACTS 0.4.15 への文書同期）
+最終更新: 2026-11-01（第5段階のコード・workflow・Runbook を実装）
+
+## 2026-11-01 第5段階（T5.1〜T5.6）のコード化
+- **terraform/**: 基盤（API・VPC・Cloud SQL〔停止側の初期値〕・バケット 3・Secret〔値なし〕・Artifact Registry・SA・カスタムロール・WIF・Cloud Run service/Jobs・Scheduler〔paused〕・監視/予算）。`ignore_changes` でモード制御属性とイメージを Terraform から外す。
+- **ops/**: `engine`（start/stop ステップ・リース・CAS）、`state`、`beacon`（Ed25519）、`status`、`plan_guard`、`deploy`、`gcloud_adapter`、`cli`。単体試験 60 件。
+- **.github/**: `ci.yml`（ops 試験 + fmt/validate/test + `ci-gate`）、`ops-start/stop/status`、`deploy`、`terraform-plan/apply`、composite 2 つ。排他は `concurrency: ops-prod`。
+- **docs/OPERATIONS.md**（Runbook・初期導入順序・本人の作業 U1〜U8・ロールバック・復元・鍵更新）。
+- **検証したこと**: `terraform fmt -check`・`validate`（実プロバイダ 8.9.0 のスキーマ）・`terraform test`（mock 16 件）、`python -m unittest`（60 件）、workflow の YAML 構文。
+- **検証していないこと**: 実 GCP への `plan`（認証が必要）、GitHub 上の workflow 実行、検証ゲート G-OPS-1〜9、`gcloud` 出力の形式（実 GCP の応答）。**mock の成功は実 plan の成功ではない。**
+- **本人の作業**: `docs/OPERATIONS.md` §0。承認が要るもの: apply・課金リソース作成・V5 の本番適用・P-1。
+
+## （以前の記録）
 
 ## 2026-11-01 T5.0 完了（文書のみ。ブランチ claude/jra-bot-replace-continue-l1lk71）
 - `CONTRACTS.md` §5（同期表: I-H1〜I-H9、環境変数、スキーマ版 5・GRANT・終了コード）、`ARCHITECTURE.md`（Jobs・DB ユーザー・プール 24）、`OPERATIONS_DESIGN.md`（UNKNOWN=75、validate=10、ビーコンの `kid`・`phase` 廃止、cancel 猶予 10 秒）を更新。DECISIONS I-023、PLAN T5.0 完了。

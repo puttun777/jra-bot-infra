@@ -24,3 +24,8 @@
 | I-021 | 2026-10-22 | 費用見積りの基準は「無料枠除外」額。GCP 通常運用 ≈ ¥8,550/月（東京推定）、全停止 ≈ ¥1,200/月 | ユーザー方針（無料枠・クレジット前提にしない） | 確定（推定値） |
 | I-022 | 2026-10-22 | 契約の正本は web。差異 D1〜D12（CONTRACTS §2）は Stage 1-D② で web 側を修正 | I-002 | 引継ぎ |
 | I-023 | 2026-11-01 | **T5.0 完了（文書同期）**: infra の ARCHITECTURE・OPERATIONS_DESIGN・CONTRACTS を web CONTRACTS 0.4.15 に同期（I-H1〜I-H9。`CONTRACTS.md` §5）。UNKNOWN は exit 75、validate の終了コード 10、ビーコンは `phase` 廃止・`kid` 追加、DB ユーザー名と GRANT の所在、Jobs は bot イメージ + `--task=`、プール合計 24、スキーマ版 5、運用値の環境変数は**既定なしの必須入力**。コード・Terraform・課金リソースの変更なし。 |
+| I-024 | 2026-11-01 | **ops は Python（標準ライブラリ + cryptography + google-cloud-storage）で実装し、GCP は `Gcp` ポートの背後に置く**。start/stop は『状態（GCS CAS）を最初に変える → 資源 → 検証』の冪等ステップ。試験は偽の GCP・GCS（`ops/tests`）。実 GCP との一致は G-OPS で確認 | OPERATIONS_DESIGN §5/§6 | 採用 |
+| I-025 | 2026-11-01 | **workflow は第三者アクションを増やさない**: Terraform は版数 + SHA-256 を固定した composite（`setup-terraform`）、GCP 認証は `gcloud iam workload-identity-pools create-cred-config`（`gcp-auth`）。長期キーなし。checkout/setup-python/upload-artifact は web と同じコミット固定 | CLAUDE.md 4 | 採用 |
+| I-026 | 2026-11-01 | **deploy はイメージ更新のみ**: manifest 検証 → migration（validate 0/10/1/75、10 は明示許可で migrate）→ Job → ingest → dashboard → ヘルス → ingress/IAP 不変の確認。mode=NORMAL 以外は既定で拒否。ingress/IAP/Scheduler/DB 起動状態には触れない | OPERATIONS_DESIGN §8 | 採用 |
+| I-027 | 2026-11-01 | **apply は承認後の同一ジョブで plan→ガード→apply**（保存した plan だけを適用）。apply 後の status は手動/定期（reusable workflow だと WIF の workflow_ref が一致しないため自動連鎖しない） | OPERATIONS_DESIGN §8.2 | 採用（差異: 設計は『apply 後に自動 status』） |
+

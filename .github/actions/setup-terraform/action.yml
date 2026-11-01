@@ -1,0 +1,15 @@
+name: setup-terraform
+description: Terraform を版数とハッシュを固定して導入する（第三者アクションに依存しない）
+runs:
+  using: composite
+  steps:
+    - shell: bash
+      env:
+        TF_VERSION: "1.17.1"
+        TF_SHA256: "4638628058e71a55212b1c563712eac03b902128f40740f3dc8174df12135061"
+      run: |
+        set -euo pipefail
+        curl -fsSL -o /tmp/terraform.zip "https://releases.hashicorp.com/terraform/${TF_VERSION}/terraform_${TF_VERSION}_linux_amd64.zip"
+        echo "${TF_SHA256}  /tmp/terraform.zip" | sha256sum -c -
+        sudo unzip -o /tmp/terraform.zip terraform -d /usr/local/bin
+        terraform version
