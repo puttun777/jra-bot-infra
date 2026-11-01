@@ -3,12 +3,13 @@
 
 ## 2026-11-01 第5段階（T5.1〜T5.6）のコード化
 - **terraform/**: 基盤（API・VPC・Cloud SQL〔停止側の初期値〕・バケット 3・Secret〔値なし〕・Artifact Registry・SA・カスタムロール・WIF・Cloud Run service/Jobs・Scheduler〔paused〕・監視/予算）。`ignore_changes` でモード制御属性とイメージを Terraform から外す。
-- **ops/**: `engine`（start/stop ステップ・リース・CAS）、`state`、`beacon`（Ed25519）、`status`、`plan_guard`、`deploy`、`gcloud_adapter`、`cli`。単体試験 70 件。
+- **ops/**: `engine`（start/stop ステップ・リース・CAS）、`state`、`beacon`（Ed25519）、`status`、`plan_guard`、`deploy`、`gcloud_adapter`、`cli`。単体試験 76 件。
 - **.github/**: `ci.yml`（ops 試験 + fmt/validate/test + `ci-gate`）、`ops-start/stop/status`、`deploy`、`terraform-plan/apply`、composite 2 つ。排他は `concurrency: ops-prod`。
 - **docs/OPERATIONS.md**（Runbook・初期導入順序・本人の作業 U1〜U8・ロールバック・復元・鍵更新）。
 - **検証したこと**: `terraform fmt -check`・`validate`（実プロバイダ 8.9.0 のスキーマ）・`terraform test`（mock 16 件）、`python -m unittest`（70 件）、workflow の YAML 構文。
 - **検証していないこと**: 実 GCP への `plan`（認証が必要）、GitHub 上の workflow 実行、検証ゲート G-OPS-1〜9、`gcloud` 出力の形式（実 GCP の応答）。**mock の成功は実 plan の成功ではない。**
 - **独立レビュー（Opus、読み取り専用、91c3765）**: 高 4・中 8・低 5。反映: H1 全 workflow に `shell: bash`（pipefail）+ 失敗時の Discord 通知 / H2 gcloud 等の予期しない失敗も FAILED として記録しリースを必ず解放 / H3 `run.jobs.run` を外し db-migration の Job にだけ `jobsExecutorWithOverrides` / H4 terraform の WIF を『main の terraform-plan/apply.yml』に束縛 / M1 修復モードでもビーコンを mode に合わせて再署名 / M2 DB 停止の直前に毎回、実行中 Job と ingress を測る / M3 実行中 Job は完了時刻の無いものを数える / M4 終了コードの取得に fallback（取れなければ 1 = fail closed。実機確認は G-OPS-10）/ M5 plan_guard に（遷移中の apply 拒否・iam_policy・IAP 許可の主体種別・invoker_iam_disabled・作成時の ingress/paused）/ M6 sa-gha-tf の actAs・IAP サービスエージェントの invoker / M7 初回 apply の順序（DB は起動して作られる → 直ちに ops-stop、Secret は 2 段階）を文書訂正 / M8 status は IAP の無効を常に ❌ / 低: status は署名鍵を読まない、job 名 `ci gate`。**未対応（記録）**: dry_run が operation を上書きする、deploy の validate 失敗時に db-migration のイメージが新しいまま残る（手順で回避）、ビーコン seq と ops-state.seq の比較定義、ingest の外部到達判定（G-OPS-1）、`rollback.min_app_release` の検査。
+- **再レビュー（Opus、e04cfea）**: 中 4・低 3。反映: plan の要約を pipefail で落とさない / 停止の S10 が自分で drain・close・外部到達確認をやり直す（再実行だけで回復できる）/ 初期導入の手順（DB は起動して作られる → 手元で `activation-policy=NEVER`。ops-stop は service/Scheduler が出来てから）/ ビーコンに kid を記録し、鍵更新後は mode が同じでも再署名 / deploy が検証に失敗したら db-migration のイメージを前の版に戻す / 重複した IAM 付与を整理 / SIGTERM・Ctrl-C でもリース解放と FAILED の記録 / 終了コード fallback は今回できた execution だけ / 未確定の IAM 主体は拒否。単体試験 76 件。未対応（記録）: dry_run が operation を上書きする、GCS の CAS で応答が失われた再試行が 412 になる件（G-OPS-6）、`rollback.min_app_release` の検査。
 - **本人の作業**: `docs/OPERATIONS.md` §0。承認が要るもの: apply・課金リソース作成・V5 の本番適用・P-1。
 
 ## （以前の記録）

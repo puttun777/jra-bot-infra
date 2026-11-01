@@ -72,6 +72,12 @@ class PlanGuardReviewFixTests(unittest.TestCase):
         for bad in ("domain:example.com", "group:g@example.com", "allUsers"):
             self.assertTrue(plan_guard.check(plan(rc(t, ["create"], None, {"member": bad})), "NORMAL"), bad)
 
+    def test_unknown_iam_member_is_rejected(self):
+        r = rc("google_cloud_run_v2_service_iam_member", ["create"], None, {"role": "roles/run.invoker"}, "google_cloud_run_v2_service_iam_member.x")
+        r["change"]["after_unknown"] = {"member": True}
+        out = plan_guard.check(plan(r), "NORMAL")
+        self.assertTrue(any("未確定" in m for m in out), out)
+
     def test_create_time_ingress_paused_and_invoker_iam(self):
         self.assertTrue(plan_guard.check(plan(rc("google_cloud_run_v2_service", ["create"], None, {"ingress": "INGRESS_TRAFFIC_ALL"})), "NORMAL"))
         self.assertEqual(plan_guard.check(plan(rc("google_cloud_run_v2_service", ["create"], None, {"ingress": "INGRESS_TRAFFIC_INTERNAL_ONLY"})), "NORMAL"), [])

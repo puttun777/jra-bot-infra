@@ -55,7 +55,9 @@ jobs:
           python -m jrabot_ops.cli "${args[@]}"
       - name: plan の要約
         run: |
-          cd terraform && terraform show -no-color "$RUNNER_TEMP/tfplan" | head -c 60000 >> "$GITHUB_STEP_SUMMARY"
+          cd terraform
+          terraform show -no-color "$RUNNER_TEMP/tfplan" > "$RUNNER_TEMP/tfplan.txt" # パイプにしない（head の早期終了で pipefail が失敗しないように）
+          head -c 60000 "$RUNNER_TEMP/tfplan.txt" >> "$GITHUB_STEP_SUMMARY"
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: tfplan

@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import signal
 import subprocess
 import sys
 import time
@@ -94,6 +95,8 @@ def main(argv: list[str] | None = None) -> int:
     g.add_argument("--mode", required=True, choices=["NORMAL", "STOPPED", "STARTING", "STOPPING", "UNKNOWN"])
     g.add_argument("--allow-destroy", action="store_true")
     a = ap.parse_args(argv)
+    # GitHub Actions のキャンセルは SIGINT → SIGTERM。例外に変えて、リースの解放と FAILED の記録を行わせる
+    signal.signal(signal.SIGTERM, lambda *_: (_ for _ in ()).throw(KeyboardInterrupt("SIGTERM")))
 
     if a.cmd == "plan-guard":
         problems = plan_guard.check(plan_guard.load(a.plan_json), a.mode, a.allow_destroy)

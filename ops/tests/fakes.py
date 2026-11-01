@@ -74,6 +74,7 @@ class FakeGcp:
         self.job_exit = {"--mode=validate": 0, "--mode=migrate": 0}
         self.externally_reachable = False
         self.calls: list[str] = []
+        self.job_images: dict[str, str] = {}
 
     def sql_state(self):
         if self.sql["activation_policy"] == "ALWAYS" and self.sql["state"] != "RUNNABLE":
@@ -123,8 +124,12 @@ class FakeGcp:
         self.calls.append(f"job:{job}:{args[0]}")
         return self.job_exit[args[0]]
 
+    def job_image(self, job):
+        return self.job_images.get(job)
+
     def job_set_image(self, job, image):
         self.calls.append(f"job-image:{job}")
+        self.job_images[job] = image
 
     def service_set_image(self, name, image):
         self.calls.append(f"svc-image:{name}")

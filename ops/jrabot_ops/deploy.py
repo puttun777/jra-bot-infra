@@ -62,17 +62,29 @@ def deploy(manifest: dict, schema: dict, mode: str, gcp: Gcp, i: DeployInputs, l
     img = manifest["images"]
     done: list[str] = []
     if mode == "NORMAL":
+        previous = gcp.job_image(DB_JOB)
         gcp.job_set_image(DB_JOB, img["db-migration"])
+
+        def fail(msg: str) -> DeployRejected:
+            # 検証できなかった db-migration のイメージを残さない（残ると、以後の ops-start が未検証の版で動く）
+            if previous and previous != img["db-migration"]:
+                try:
+                    gcp.job_set_image(DB_JOB, previous)
+                    msg += "（db-migration のイメージは前の版に戻した）"
+                except Exception as e:  # noqa: BLE001
+                    msg += f"（db-migration のイメージを戻せなかった: {type(e).__name__}。手動で前の版に戻すこと）"
+            return DeployRejected(msg)
+
         code = gcp.run_job(DB_JOB, ["--mode=validate"])
         if code == 10:
             if not migrate:
-                raise DeployRejected("未適用のマイグレーションがある（apply_migrations=true で実行）")
+                raise fail("未適用のマイグレーションがある（apply_migrations=true で実行）")
             log("未適用のマイグレーションを適用する")
             if gcp.run_job(DB_JOB, ["--mode=migrate"]) != 0:
-                raise DeployRejected("migrate が失敗（アプリは更新していない）")
+                raise fail("migrate が失敗（アプリは更新していない）")
             code = gcp.run_job(DB_JOB, ["--mode=validate"])
         if code != 0:
-            raise DeployRejected(f"db-migration validate が終了コード {code}（0 以外。アプリは更新していない。1=不一致/失敗版、75=DB 不達）")
+            raise fail(f"db-migration validate が終了コード {code}（0 以外。アプリは更新していない。1=不一致/失敗版、75=DB 不達）")
         done.append("migration")
     else:
         gcp.job_set_image(DB_JOB, img["db-migration"])

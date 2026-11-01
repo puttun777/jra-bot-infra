@@ -94,6 +94,9 @@ def check(plan: dict, mode: str, allow_destroy: bool = False) -> list[str]:
                 if not (m.startswith("user:") or m.startswith("serviceAccount:")):
                     problems.append(f"{addr}: IAP の許可に user:/serviceAccount: 以外の主体 {m} は拒否")
         if typ.endswith("_iam_member") or typ.endswith("_iam_binding") or typ.endswith("_iam_policy"):
+            unknown = rc["change"].get("after_unknown") or {}
+            if any(unknown.get(k) for k in ("member", "members", "policy_data")):
+                problems.append(f"{addr}: IAM の主体が plan の時点で未確定（検査できないので拒否）")
             members = _members(after)
             before_members = _members(before)
             for m in members or []:

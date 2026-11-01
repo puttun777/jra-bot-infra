@@ -16,12 +16,12 @@
 
 ## 1. 初期導入の順序（初回のみ）
 1. **tfstate バケット**（bootstrap）: `gcloud storage buckets create gs://<project_id>-tfstate --location=asia-northeast1 --uniform-bucket-level-access --public-access-prevention` と `gcloud storage buckets update gs://<project_id>-tfstate --versioning`。
-2. **WIF と SA の最初の 1 回だけは手元から**: GitHub Actions が使う WIF 自体を Terraform が作るため、最初の apply はローカル（本人の認証）で `terraform apply` する。以後は workflow に移す。手順は §2。
-3. **初回 apply の直後は DB が起動している（`activation_policy=ALWAYS`。DB・ユーザーの作成に起動が必要なため）= 課金中**。apply が終わったら**すぐに ops-stop を実行**して STOPPED に揃える（`ops-state` の初期値は STOPPED。stop は『STOPPED だが DB が起動』を修復として扱う）。`release_images=null` の間は Cloud Run の service/job は作られず基盤だけができる（I-017）。
-4. **Secret は 2 段階で作る**（DB のパスワードは Secret Manager の値を ephemeral で読むため、値が無いと apply が失敗する）: ① `terraform apply -target=google_project_service.api -target=google_secret_manager_secret.secret`（箱だけ作る）→ ② §3 で値を入れる → ③ 通常の `terraform apply`。DB のパスワードは `password_wo`（write-only）で設定され、state に残らない。
-5. web の release（イメージ + `release-manifest.json`）ができたら、`terraform.tfvars`（コミットしない）に `release_images` と `app_runtime` を入れて 2 回目の apply で Cloud Run の service/job を作る。以後のイメージ更新は **deploy workflow**（Terraform は `ignore_changes` でイメージを見ない）。
-6. **ops-stop を 1 回実行**して、運用モードを `STOPPED` に揃える（初期状態の `ops-state` は STOPPED。DB が停止のままであることの確認が目的）。
-7. 動かす時: **ops-start**（`apply_pending_migrations=true`）→ **ops-status**（全行 ✅）。
+2. **WIF と SA の最初の 1 回だけは手元から**: GitHub Actions が使う WIF 自体を Terraform が作るため、最初の apply はローカル（本人の認証）で行う。以後は workflow に移す。
+3. **Secret の箱だけ先に作る**（DB のパスワードは Secret Manager の値を ephemeral で読むため、値が無いと全体の apply が失敗する）: `terraform apply -target=google_project_service.api -target=google_secret_manager_secret.secret`。続けて §3 で値を入れる。
+4. **基盤の apply（`release_images=null`）**: 通常の `terraform apply`。DB・ユーザー・WIF・バケット・Secret の権限などができる。Cloud Run の service / Job / Scheduler は **まだ作られない**（release が無いため）。
+5. **この時点で DB は起動していて課金中**（`activation_policy=ALWAYS`。DB・ユーザーの作成に起動が必要なため）。ops-stop は Scheduler / service が無いので使えない。**手元で直接止める**: `gcloud sql instances patch jra-bot-db --activation-policy=NEVER`。`ops-state` の初期値は STOPPED なので、以後の状態と一致する。
+6. web の release（イメージ + `release-manifest.json`）ができたら、`terraform.tfvars`（コミットしない）に `release_images` と `app_runtime` を入れて 2 回目の apply（Cloud Run の service / Job / Scheduler が **停止側の初期値**〔ingress=internal、paused〕で作られる。DB は停止のまま〔`ignore_changes`〕）。以後のイメージ更新は **deploy workflow**（Terraform はイメージを見ない）。
+7. 動かす時: **ops-start**（`apply_pending_migrations=true`）→ **ops-status**（全行 ✅）。止める時: **ops-stop**。
 
 ## 2. Terraform（`terraform-plan.yml` / `terraform-apply.yml`）
 - 手元の確認: `cd terraform && terraform fmt -check -recursive && terraform init -backend=false -lockfile=readonly && terraform validate && terraform test`（**mock の成功は実 GCP の plan 成功ではない**）。
@@ -64,4 +64,4 @@
 | Terraform | `fmt` / `validate`（実プロバイダのスキーマ）/ `terraform test`（mock）済み。**実 GCP に対する `plan` は未実施**（認証が必要） |
 | workflow | YAML 構文のみ。**GitHub 上での実行は未実施**（Environment・変数・WIF の設定後に実行） |
 | 検証ゲート G-OPS-1〜9 | 未実施（実リソースが必要） |
-| 追加の未確認（独立レビュー由来） | G-OPS-10: `gcloud run jobs execute --wait` 失敗時に db-migration の終了コード 10 を取れるか（取れないと start/deploy は『未適用あり』を『不整合』として止まる = 安全側）。IAP のサービスエージェント（`service-<番号>@gcp-sa-iap…`）が apply 時点で存在するか、IAP の audience、`ingress=internal` の外部応答コード |
+| 追加の未確認（独立レビュー由来） | G-OPS-10: `gcloud run jobs execute --wait` 失敗時に db-migration の終了コード 10 を取れるか（取れないと start/deploy は『未適用あり』を『不整合』として止まる = 安全側）。DB が停止中に `terraform plan`/`apply` の refresh が Cloud SQL のユーザー・DB を読めるか（読めない場合は apply の前に ops-start が必要になる）、IAP のサービスエージェント（`service-<番号>@gcp-sa-iap…`）が apply 時点で存在するか、IAP の audience、`ingress=internal` の外部応答コード |

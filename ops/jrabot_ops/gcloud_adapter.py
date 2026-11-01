@@ -124,21 +124,41 @@ class GcloudAdapter:
 
     def run_job(self, job: str, args: list[str]) -> int:
         cmd = ["gcloud", "run", "jobs", "execute", job, f"--region={self.region}", "--wait", f"--args={','.join(args)}", f"--project={self.project}", "--quiet"]
+        known = self._execution_names(job)  # 今回の execution だけを後で特定するため、実行前の一覧を控える
         code, out = self.run(cmd)
         if code == 0:
             return 0
         m = re.search(r"exit\((\d+)\)", out)
         if m:
             return int(m.group(1))
-        # 出力に終了コードが無い場合は、直近の execution の記述から探す（形式は実 GCP で未確認: G-OPS-10）。見つからなければ 1（fail closed）
+        # 出力に終了コードが無い場合は、**今回新しくできた** execution の記述から探す（形式は実 GCP で未確認: G-OPS-10）。見つからなければ 1（fail closed）
         try:
-            d = self._json(["gcloud", "run", "jobs", "executions", "list", f"--job={job}", f"--region={self.region}", "--limit=1"]) or []
-            m = re.search(r"exit\((\d+)\)", json.dumps(d))
+            d = self._json(["gcloud", "run", "jobs", "executions", "list", f"--job={job}", f"--region={self.region}"]) or []
+            fresh = [e for e in d if e.get("metadata", {}).get("name") not in known]
+            m = re.search(r"exit\((\d+)\)", json.dumps(fresh))
             if m:
                 return int(m.group(1))
         except RuntimeError:
             pass
         return 1
+
+    def _execution_names(self, job: str) -> set[str]:
+        try:
+            d = self._json(["gcloud", "run", "jobs", "executions", "list", f"--job={job}", f"--region={self.region}"]) or []
+        except RuntimeError:
+            return set()
+        return {e.get("metadata", {}).get("name") for e in d}
+
+    def job_image(self, job: str) -> str | None:
+        """Job の現在のイメージ（deploy が失敗時に戻すため）。取れなければ None。"""
+        try:
+            d = self._json(["gcloud", "run", "jobs", "describe", job, f"--region={self.region}"]) or {}
+        except RuntimeError:
+            return None
+        try:
+            return d["spec"]["template"]["spec"]["template"]["spec"]["containers"][0]["image"]
+        except (KeyError, IndexError, TypeError):
+            return None
 
     def job_set_image(self, job: str, image: str) -> None:
         """deploy 用。イメージだけを更新する（環境変数・Secret・args・実行はしない）。"""

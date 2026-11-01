@@ -69,6 +69,16 @@ class DeployTests(unittest.TestCase):
             deploy(manifest(), SCHEMA, "NORMAL", g, DeployInputs(PRJ, apply_migrations=False), log=lambda *_: None)
         self.assertFalse([c for c in g.calls if c.startswith("svc-image")])
 
+    def test_failed_validation_restores_the_previous_migration_image(self):
+        for code in (1, 75, 10):
+            g = gcp()
+            g.job_images["jra-bot-db-migration"] = "previous@sha256:" + "c" * 64
+            g.job_exit["--mode=validate"] = code
+            with self.assertRaises(DeployRejected) as cm:
+                deploy(manifest(), SCHEMA, "NORMAL", g, DeployInputs(PRJ, apply_migrations=False), log=lambda *_: None)
+            self.assertEqual(g.job_images["jra-bot-db-migration"], "previous@sha256:" + "c" * 64, code)
+            self.assertIn("戻した", str(cm.exception))
+
     def test_schema_mismatch_or_db_unreachable_stops_before_apps(self):
         for code in (1, 75):
             g = gcp()

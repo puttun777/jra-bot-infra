@@ -411,16 +411,6 @@ resource "google_cloud_run_v2_job_iam_member" "bot_launches_bot_run" {
   member   = "serviceAccount:${google_service_account.sa["bot"].email}"
 }
 
-# deploy が db-migration を実行（migrate。NORMAL のときだけ workflow が呼ぶ）。ops は validate のためにカスタムロールで run.jobs.run を持つ
-resource "google_cloud_run_v2_job_iam_member" "deploy_runs_migration" {
-  count = local.deploy_enabled ? 1 : 0
-
-  name     = google_cloud_run_v2_job.db_migration[0].name
-  location = var.region
-  role     = "roles/run.jobsExecutorWithOverrides"
-  member   = "serviceAccount:${google_service_account.sa["gha-deploy"].email}"
-}
-
 # db-migration の Job にだけ『引数付きで実行』を許す（ops: validate/migrate、deploy: validate/migrate）。プロジェクト全体の run.jobs.run は付けない
 resource "google_cloud_run_v2_job_iam_member" "db_migration_exec" {
   for_each = local.deploy_enabled ? toset(["gha-ops", "gha-deploy"]) : toset([])

@@ -79,8 +79,33 @@ class GcloudAdapterTests(unittest.TestCase):
         a2, _ = adapter({"jobs execute": (1, "boom")})
         self.assertEqual(a2.run_job("j", ["--mode=validate"]), 1)
         # 出力に終了コードが無いときは、直近の execution の記述から探す。見つからなければ 1（fail closed）
-        a3, r3 = adapter({"jobs execute": (1, "boom"), "executions list": (0, json.dumps([{"status": {"conditions": [{"message": "Container called exit(10)."}]}}]))})
+        # execute が execution を作る前に失敗した場合、古い execution の終了コードを拾わない（実行前から存在したものは除外）
+        old = [{"metadata": {"name": "old-exec"}, "status": {"conditions": [{"message": "Container called exit(10)."}]}}]
+        a4, _ = adapter({"jobs execute": (1, "boom"), "executions list": (0, json.dumps(old))})
+        self.assertEqual(a4.run_job("j", ["--mode=validate"]), 1)
+
+        # 今回できた execution の記述から探す
+        class Seq(Runner):
+            def __call__(self, cmd):
+                self.calls.append(cmd)
+                joined = " ".join(cmd)
+                if "executions list" in joined:
+                    listed = sum("executions list" in " ".join(c) for c in self.calls)
+                    new = {"metadata": {"name": "new-exec"}, "status": {"conditions": [{"message": "Container called exit(10)."}]}}
+                    return 0, json.dumps([new] if listed > 1 else [])
+                if "jobs execute" in joined:
+                    return 1, "boom"
+                return 0, "null"
+
+        a3 = GcloudAdapter("proj", "asia-northeast1", Seq())
         self.assertEqual(a3.run_job("j", ["--mode=validate"]), 10)
+
+    def test_job_image_is_read_from_the_job_description(self):
+        d = {"spec": {"template": {"spec": {"template": {"spec": {"containers": [{"image": "img@sha256:" + "a" * 64}]}}}}}}
+        a, _ = adapter({"jobs describe": (0, json.dumps(d))})
+        self.assertEqual(a.job_image("j"), "img@sha256:" + "a" * 64)
+        a2, _ = adapter({"jobs describe": (1, "NOT_FOUND")})
+        self.assertIsNone(a2.job_image("j"))
 
     def test_scheduler_states(self):
         d = [{"name": "projects/p/locations/l/jobs/jra-bot-reconcile", "state": "PAUSED"}]

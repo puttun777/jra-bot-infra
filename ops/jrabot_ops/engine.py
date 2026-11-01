@@ -69,7 +69,7 @@ class Ops:
         raw = make_beacon(self.key, self.kid, mode, self.state["seq"], self.clock.now())
         self.beacon_store.write(raw)
         s = copy.deepcopy(self.state)
-        s["beacon"] = {"seq": self.state["seq"], "mode": mode, "updated_at": self.clock.now()}
+        s["beacon"] = {"seq": self.state["seq"], "mode": mode, "updated_at": self.clock.now(), "kid": self.kid}
         self._commit(s, f"beacon-{mode}")
 
     # ------------------------------------------------------------------ ステップ
@@ -147,10 +147,10 @@ class Ops:
                 self._step("S11_beacon_normal", lambda: self._write_beacon("NORMAL"))
             else:
                 self._repair_beacon("NORMAL")
-        except Exception as e:  # noqa: BLE001 - 予期しない失敗でもリースを解放して失敗として伝える
-            self._end(False, str(e))
-            self.notify("ops-start 失敗", str(e))
-            if isinstance(e, (StepFailed, S.Rejected)):
+        except BaseException as e:  # noqa: BLE001 - 予期しない失敗・中断(SIGTERM/Ctrl-C)でもリースを解放して失敗として伝える
+            self._end(False, str(e) or type(e).__name__)
+            self.notify("ops-start 失敗", str(e) or type(e).__name__)
+            if isinstance(e, (StepFailed, S.Rejected)) or not isinstance(e, Exception):
                 raise
             raise StepFailed(f"{type(e).__name__}: {str(e)[:300]}") from e
         self._end(True, None)
@@ -159,7 +159,8 @@ class Ops:
     def _repair_beacon(self, mode: str) -> None:
         """修復モードでも、ビーコンが mode と食い違っていれば署名し直す（S10 成功・S11 失敗後の再実行で更新されない問題）。"""
         b = self.state.get("beacon") or {}
-        if b.get("mode") != mode:
+        # mode が食い違う、または署名鍵の kid が違う（鍵の更新後の再署名）ときに書き直す
+        if b.get("mode") != mode or b.get("kid") != self.kid:
             self._step("S_beacon_repair", lambda: self._write_beacon(mode))
 
     def _set_mode(self, mode: str, desired: str, i: Inputs) -> str:
@@ -235,10 +236,10 @@ class Ops:
                 self._step("S12_beacon_stopped", lambda: self._write_beacon("STOPPED"))
             else:
                 self._repair_beacon("STOPPED")
-        except Exception as e:  # noqa: BLE001
-            self._end(False, str(e))
-            self.notify("ops-stop 失敗", str(e))
-            if isinstance(e, (StepFailed, S.Rejected)):
+        except BaseException as e:  # noqa: BLE001
+            self._end(False, str(e) or type(e).__name__)
+            self.notify("ops-stop 失敗", str(e) or type(e).__name__)
+            if isinstance(e, (StepFailed, S.Rejected)) or not isinstance(e, Exception):
                 raise
             raise StepFailed(f"{type(e).__name__}: {str(e)[:300]}") from e
         self._end(True, None)
@@ -287,12 +288,13 @@ class Ops:
         return "quiet"
 
     def _db_stop(self) -> str:
-        # 再実行でも毎回、DB を止める直前に実状態を測る（記録だけで前のステップをスキップしない）
+        # 再実行でも毎回、DB を止める直前に実状態を測り、足りなければ**ここで**やり直す（前のステップが記録上 DONE でも信用しない）
         if self.gcp.running_executions():
-            raise StepFailed("実行中の Job が残っている。DB を止めない")
+            self._cancel_rest()  # 0 件にならなければ StepFailed（DB は止めない）
+        self._close()
         for name in SERVICES:
-            if self.gcp.service_state(name).get("ingress") != "internal":
-                raise StepFailed(f"{name} の ingress が internal ではない。DB を止めない（stop を最初から再実行）")
+            if self.gcp.service_reachable_externally(name):
+                raise StepFailed(f"{name} に外部から到達できる。DB を止めない")
         if self.gcp.sql_state().get("state") == "STOPPED":
             return "already stopped"
         self.gcp.sql_set_activation("NEVER")
