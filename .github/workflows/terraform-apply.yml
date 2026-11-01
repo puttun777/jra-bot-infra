@@ -16,6 +16,9 @@ permissions:
 concurrency:
   group: ops-prod
   cancel-in-progress: false
+defaults:
+  run:
+    shell: bash # -eo pipefail（パイプの途中の失敗を成功にしない）
 jobs:
   apply:
     if: github.ref == 'refs/heads/main' && inputs.confirm == 'apply'

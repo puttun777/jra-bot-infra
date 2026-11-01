@@ -83,6 +83,13 @@ class Ops:
         except StepFailed as e:
             self._commit(S.record_step(self.state, name, "FAILED", self.clock.now(), str(e)), f"{name}-failed")
             raise
+        except Exception as e:  # noqa: BLE001 - gcloud/GCS の失敗も FAILED として記録し、リースを必ず解放する
+            msg = f"{type(e).__name__}: {str(e)[:300]}"
+            try:
+                self._commit(S.record_step(self.state, name, "FAILED", self.clock.now(), msg), f"{name}-failed")
+            except Exception:  # noqa: BLE001 - 記録できなくても元の失敗を伝える
+                pass
+            raise StepFailed(msg) from e
         self._commit(S.record_step(self.state, name, "DONE", self.clock.now(), detail), f"{name}-done")
 
     # ------------------------------------------------------------------ 共通の開始・終了
@@ -97,9 +104,13 @@ class Ops:
         return kind
 
     def _end(self, ok: bool, error: str | None) -> None:
+        """操作の終了。**計測に失敗してもリースは必ず解放する**（解放できないと次の実行が 90 分拒否される）。"""
         s = S.finish(self.state, ok, self.clock.now(), error)
         s = S.release_lease(s, self.state["lease"]["holder"] if self.state.get("lease") else "")
-        s["last_actual"] = self._measure()
+        try:
+            s["last_actual"] = self._measure()
+        except Exception as e:  # noqa: BLE001
+            s["last_actual"] = {"captured_at": self.clock.now(), "error": f"{type(e).__name__}: {str(e)[:200]}"}
         self._commit(s, "end")
 
     def _measure(self) -> dict:
@@ -134,12 +145,22 @@ class Ops:
             if not repair_only:
                 self._step("S10_mode_normal", lambda: self._set_mode("NORMAL", "NORMAL", i))
                 self._step("S11_beacon_normal", lambda: self._write_beacon("NORMAL"))
-        except (StepFailed, S.Rejected) as e:
+            else:
+                self._repair_beacon("NORMAL")
+        except Exception as e:  # noqa: BLE001 - 予期しない失敗でもリースを解放して失敗として伝える
             self._end(False, str(e))
             self.notify("ops-start 失敗", str(e))
-            raise
+            if isinstance(e, (StepFailed, S.Rejected)):
+                raise
+            raise StepFailed(f"{type(e).__name__}: {str(e)[:300]}") from e
         self._end(True, None)
         return {"mode": self.state["mode"]}
+
+    def _repair_beacon(self, mode: str) -> None:
+        """修復モードでも、ビーコンが mode と食い違っていれば署名し直す（S10 成功・S11 失敗後の再実行で更新されない問題）。"""
+        b = self.state.get("beacon") or {}
+        if b.get("mode") != mode:
+            self._step("S_beacon_repair", lambda: self._write_beacon(mode))
 
     def _set_mode(self, mode: str, desired: str, i: Inputs) -> str:
         s = S.set_mode(self.state, mode, desired, i.actor, i.reason, self.clock.now())
@@ -212,10 +233,14 @@ class Ops:
             if not repair_only:
                 self._step("S11_mode_stopped", lambda: self._set_mode("STOPPED", "STOPPED", i))
                 self._step("S12_beacon_stopped", lambda: self._write_beacon("STOPPED"))
-        except (StepFailed, S.Rejected) as e:
+            else:
+                self._repair_beacon("STOPPED")
+        except Exception as e:  # noqa: BLE001
             self._end(False, str(e))
             self.notify("ops-stop 失敗", str(e))
-            raise
+            if isinstance(e, (StepFailed, S.Rejected)):
+                raise
+            raise StepFailed(f"{type(e).__name__}: {str(e)[:300]}") from e
         self._end(True, None)
         return {"mode": self.state["mode"]}
 
@@ -248,6 +273,9 @@ class Ops:
         return "ingress=internal"
 
     def _verify_quiet(self) -> str:
+        for name in SERVICES:
+            if self.gcp.service_state(name).get("ingress") != "internal":
+                raise StepFailed(f"{name} の ingress が internal ではない")
         if self.gcp.running_executions():
             raise StepFailed("実行中の Job が残っている")
         for name in SERVICES:
@@ -259,6 +287,12 @@ class Ops:
         return "quiet"
 
     def _db_stop(self) -> str:
+        # 再実行でも毎回、DB を止める直前に実状態を測る（記録だけで前のステップをスキップしない）
+        if self.gcp.running_executions():
+            raise StepFailed("実行中の Job が残っている。DB を止めない")
+        for name in SERVICES:
+            if self.gcp.service_state(name).get("ingress") != "internal":
+                raise StepFailed(f"{name} の ingress が internal ではない。DB を止めない（stop を最初から再実行）")
         if self.gcp.sql_state().get("state") == "STOPPED":
             return "already stopped"
         self.gcp.sql_set_activation("NEVER")

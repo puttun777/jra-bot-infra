@@ -167,7 +167,7 @@ stateDiagram-v2
 ### 8.1 影響マトリクス（どの変更がどのモードに影響するか）
 | 属性/操作 | 書く主体 | 影響するモード | ガード |
 |---|---|---|---|
-| Cloud SQL `activation_policy` | **ops のみ** | NORMAL/STOPPED（課金） | Terraform: `ignore_changes`、作成時の初期値は `NEVER`（作成直後は停止。初回 start で起動）。**apply 前ガード**（§8.2）で変更を検出したら失敗 |
+| Cloud SQL `activation_policy` | **ops のみ** | NORMAL/STOPPED（課金） | Terraform: `ignore_changes`、作成時の初期値は **`ALWAYS`**（DB・ユーザーの作成が起動中でないと失敗するため。T5.2 の実装で訂正）。**初回 apply の直後は DB が起動して課金中なので、直ちに ops-stop を実行して STOPPED に揃える**（OPERATIONS.md §1）。**apply 前ガード**（§8.2）で変更を検出したら失敗 |
 | Cloud SQL のマシン種別・フラグ・メンテナンス設定 | Terraform | 変更時に**再起動**を伴うことがある | apply 前ガード: mode=NORMAL のときのみ許可、STOPPED 中の apply は「停止中の DB を起動しうる変更」を拒否 |
 | Cloud Run service `ingress` | **ops のみ** | 受付可否 | Terraform: `ignore_changes`、作成時の初期値は `internal`。deploy は ingress を指定しない（`gcloud run deploy` は既存 ingress を保持）→ deploy 後に status で検証 |
 | Cloud Run service の IAP 有効・許可リスト（IAM） | Terraform | 認証 | ops は**触らない**。status で常時検証 |

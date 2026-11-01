@@ -17,8 +17,8 @@
 ## 1. 初期導入の順序（初回のみ）
 1. **tfstate バケット**（bootstrap）: `gcloud storage buckets create gs://<project_id>-tfstate --location=asia-northeast1 --uniform-bucket-level-access --public-access-prevention` と `gcloud storage buckets update gs://<project_id>-tfstate --versioning`。
 2. **WIF と SA の最初の 1 回だけは手元から**: GitHub Actions が使う WIF 自体を Terraform が作るため、最初の apply はローカル（本人の認証）で `terraform apply` する。以後は workflow に移す。手順は §2。
-3. 初回 apply の直後は **DB は `activation_policy=NEVER`（停止）で作られる**。`release_images=null` の間は Cloud Run の service/job は作られず基盤だけができる（I-017）。
-4. Secret の値を入れる（§3）→ DB のパスワードは Terraform が `password_wo`（write-only）で Secret Manager から読んで設定する。
+3. **初回 apply の直後は DB が起動している（`activation_policy=ALWAYS`。DB・ユーザーの作成に起動が必要なため）= 課金中**。apply が終わったら**すぐに ops-stop を実行**して STOPPED に揃える（`ops-state` の初期値は STOPPED。stop は『STOPPED だが DB が起動』を修復として扱う）。`release_images=null` の間は Cloud Run の service/job は作られず基盤だけができる（I-017）。
+4. **Secret は 2 段階で作る**（DB のパスワードは Secret Manager の値を ephemeral で読むため、値が無いと apply が失敗する）: ① `terraform apply -target=google_project_service.api -target=google_secret_manager_secret.secret`（箱だけ作る）→ ② §3 で値を入れる → ③ 通常の `terraform apply`。DB のパスワードは `password_wo`（write-only）で設定され、state に残らない。
 5. web の release（イメージ + `release-manifest.json`）ができたら、`terraform.tfvars`（コミットしない）に `release_images` と `app_runtime` を入れて 2 回目の apply で Cloud Run の service/job を作る。以後のイメージ更新は **deploy workflow**（Terraform は `ignore_changes` でイメージを見ない）。
 6. **ops-stop を 1 回実行**して、運用モードを `STOPPED` に揃える（初期状態の `ops-state` は STOPPED。DB が停止のままであることの確認が目的）。
 7. 動かす時: **ops-start**（`apply_pending_migrations=true`）→ **ops-status**（全行 ✅）。
@@ -45,6 +45,7 @@
 - 入力は web の `release-manifest.json`（URL + SHA-256）だけ。検証: スキーマ（`schemas/release-manifest.v2.json`、web の写し）・プロジェクトの一致・digest 固定・`contract_version` 0.4.x・プレビュー拒否。
 - 順序: db-migration のイメージ更新 → `validate`（0 / 10 / 1 / 75）→ 10 なら `migrate` → 再 validate が 0 → 各 Job → ingest → dashboard → ヘルスチェック → **ingress/IAP が deploy の前後で不変**。`mode=NORMAL` 以外は既定で拒否（`allow_when_stopped` はイメージ参照のみ・migration なし）。
 - **ロールバック**: アプリは前の manifest で deploy を再実行（`rollback.min_app_release` 以上のみ。スキーマは前進のみで、migration の巻き戻しはしない = 後方互換な migration しか入れない設計）。DB に問題があるときは §6 の復元。
+- `deploy` が validate で拒否しても db-migration の Job のイメージは新しい版のまま残る。**直後に ops-start を `apply_pending_migrations` 付きで実行しない**（検証されていない版が適用され得る）。前の manifest で deploy をやり直してから行う。
 - 失敗の読み方: validate が 1 → スキーマ不一致または失敗した migration（アプリは更新されていない）/ 75 → DB 不達（start されていない可能性。status）/ ヘルスチェック失敗 → 前の manifest で再 deploy。
 
 ## 6. バックアップ・復元
@@ -63,3 +64,4 @@
 | Terraform | `fmt` / `validate`（実プロバイダのスキーマ）/ `terraform test`（mock）済み。**実 GCP に対する `plan` は未実施**（認証が必要） |
 | workflow | YAML 構文のみ。**GitHub 上での実行は未実施**（Environment・変数・WIF の設定後に実行） |
 | 検証ゲート G-OPS-1〜9 | 未実施（実リソースが必要） |
+| 追加の未確認（独立レビュー由来） | G-OPS-10: `gcloud run jobs execute --wait` 失敗時に db-migration の終了コード 10 を取れるか（取れないと start/deploy は『未適用あり』を『不整合』として止まる = 安全側）。IAP のサービスエージェント（`service-<番号>@gcp-sa-iap…`）が apply 時点で存在するか、IAP の audience、`ingress=internal` の外部応答コード |

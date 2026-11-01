@@ -27,6 +27,9 @@ permissions:
 concurrency:
   group: ops-prod
   cancel-in-progress: false
+defaults:
+  run:
+    shell: bash # -eo pipefail（パイプの途中の失敗を成功にしない）
 jobs:
   stop:
     if: github.ref == 'refs/heads/main'
@@ -63,3 +66,8 @@ jobs:
         if: always() && inputs.dry_run != true
         working-directory: ops
         run: python -m jrabot_ops.cli status --project "$PROJECT_ID" | tee -a "$GITHUB_STEP_SUMMARY"
+      - name: 失敗を Discord に通知
+        if: failure()
+        uses: ./.github/actions/notify-discord
+        with:
+          title: "ops-stop 失敗（STOPPING のまま。同じ workflow を再実行すると続きから）"

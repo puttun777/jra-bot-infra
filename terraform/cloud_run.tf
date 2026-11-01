@@ -186,6 +186,20 @@ resource "google_iap_web_cloud_run_service_iam_member" "dashboard_ops_health" {
   member                 = "serviceAccount:${google_service_account.sa["gha-ops"].email}"
 }
 
+# IAP のサービスエージェントが dashboard を呼べるようにする（IAP を通過しても 403 になるのを防ぐ）。google_project_service_identity は beta 専用のため、メンバー名を直接指定する
+resource "google_cloud_run_v2_service_iam_member" "dashboard_iap_invoker" {
+  count = local.deploy_enabled ? 1 : 0
+
+  project  = var.project_id
+  location = var.region
+  name     = google_cloud_run_v2_service.dashboard[0].name
+  role     = "roles/run.invoker"
+  member   = "serviceAccount:service-${var.project_number}@gcp-sa-iap.iam.gserviceaccount.com"
+
+  # サービスエージェントは IAP API の有効化後に作られる。無ければこの付与が失敗する（失敗側に倒れる）。実機で確認（G-OPS-7/8）
+  depends_on = [google_project_service.api]
+}
+
 # ---- Jobs
 resource "google_cloud_run_v2_job" "bot" {
   for_each = local.deploy_enabled ? local.bot_jobs : {}
@@ -405,4 +419,15 @@ resource "google_cloud_run_v2_job_iam_member" "deploy_runs_migration" {
   location = var.region
   role     = "roles/run.jobsExecutorWithOverrides"
   member   = "serviceAccount:${google_service_account.sa["gha-deploy"].email}"
+}
+
+# db-migration の Job にだけ『引数付きで実行』を許す（ops: validate/migrate、deploy: validate/migrate）。プロジェクト全体の run.jobs.run は付けない
+resource "google_cloud_run_v2_job_iam_member" "db_migration_exec" {
+  for_each = local.deploy_enabled ? toset(["gha-ops", "gha-deploy"]) : toset([])
+
+  project  = var.project_id
+  location = var.region
+  name     = google_cloud_run_v2_job.db_migration[0].name
+  role     = "roles/run.jobsExecutorWithOverrides"
+  member   = "serviceAccount:${google_service_account.sa[each.value].email}"
 }

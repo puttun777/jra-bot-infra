@@ -10,6 +10,9 @@ permissions:
 concurrency:
   group: ops-status
   cancel-in-progress: false
+defaults:
+  run:
+    shell: bash # -eo pipefail（パイプの途中の失敗を成功にしない）
 jobs:
   status:
     if: github.ref == 'refs/heads/main'

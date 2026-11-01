@@ -33,13 +33,15 @@ def _secret(project: str, name: str) -> str:
     return p.stdout
 
 
-def _build(args) -> tuple[Ops, GcloudAdapter, GcsStateStore]:
+def _build(args, with_key: bool = True) -> tuple[Ops | None, GcloudAdapter, GcsStateStore]:
     from google.cloud import storage  # 遅延 import（plan-guard と試験では不要）
 
     client = storage.Client(project=args.project)
     store = GcsStateStore(client.bucket(f"{args.project}-ops-state"))
     beacon = GcsBeaconStore(client.bucket(f"{args.project}-mode-beacon"))
     gcp = GcloudAdapter(args.project, args.region)
+    if not with_key:  # status は署名鍵に触れない（読み取り専用。不要な秘密を読まない）
+        return None, gcp, store
     key = private_key_from_secret(_secret(args.project, "beacon-signing-key"))
     ops = Ops(store, beacon, gcp, SystemClock(), key, args.kid, notifier=lambda t, b: print(f"::notice title={t}::{b}"))
     return ops, gcp, store
@@ -108,7 +110,7 @@ def main(argv: list[str] | None = None) -> int:
         return 0
     if a.cmd == "deploy":
         return _deploy(a)
-    ops, gcp, store = _build(a if a.cmd != "status" else _StatusArgs(a))
+    ops, gcp, store = _build(a if a.cmd != "status" else _StatusArgs(a), with_key=a.cmd != "status")
     if a.cmd == "status":
         state, _ = store.read()
         rows = collect(state, gcp)

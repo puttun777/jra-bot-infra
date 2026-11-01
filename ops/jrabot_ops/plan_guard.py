@@ -39,8 +39,31 @@ def _get(d, path):
     return d
 
 
+STABLE_MODES = ("NORMAL", "STOPPED")
+IAP_ACCESSOR_TYPES = ("google_iap_web_cloud_run_service_iam_member", "google_iap_web_cloud_run_service_iam_binding")
+
+
+def _members(d: dict | None) -> list[str]:
+    if not d:
+        return []
+    if d.get("member"):
+        return [d["member"]]
+    if d.get("members"):
+        return list(d["members"])
+    pd = d.get("policy_data")  # *_iam_policy
+    if isinstance(pd, str):
+        try:
+            return [m for b in json.loads(pd).get("bindings", []) for m in b.get("members", [])]
+        except ValueError:
+            return ["<unparseable policy_data>"]
+    return []
+
+
 def check(plan: dict, mode: str, allow_destroy: bool = False) -> list[str]:
     problems: list[str] = []
+    changing = [rc for rc in plan.get("resource_changes", []) if rc.get("change", {}).get("actions") not in (["no-op"], ["read"])]
+    if changing and mode not in STABLE_MODES:
+        problems.append(f"mode={mode} の間は apply しない（start/stop の完了後に。ガードは変更 {len(changing)} 件を拒否）")
     for rc in plan.get("resource_changes", []):
         actions = rc.get("change", {}).get("actions", [])
         if actions == ["no-op"] or actions == ["read"]:
@@ -59,9 +82,20 @@ def check(plan: dict, mode: str, allow_destroy: bool = False) -> list[str]:
             problems.append(f"{addr}: Scheduler の paused の変更は start/stop だけが行う")
         if typ == "google_cloud_run_v2_service" and before and after and before.get("iap_enabled") and not after.get("iap_enabled"):
             problems.append(f"{addr}: IAP の無効化は拒否")
-        if typ.endswith("_iam_member") or typ.endswith("_iam_binding"):
-            members = [after.get("member")] if after and after.get("member") else (after or {}).get("members", [])
-            before_members = [before.get("member")] if before and before.get("member") else (before or {}).get("members", [])
+        if typ == "google_cloud_run_v2_service" and after is not None:
+            if "create" in actions and after.get("ingress") not in (None, "INGRESS_TRAFFIC_INTERNAL_ONLY"):
+                problems.append(f"{addr}: 作成時の ingress は INGRESS_TRAFFIC_INTERNAL_ONLY であること（停止側の初期値）")
+            if after.get("invoker_iam_disabled") and not (before or {}).get("invoker_iam_disabled"):
+                problems.append(f"{addr}: invoker_iam_disabled=true は拒否（IAM 認証を外す）")
+        if typ == "google_cloud_scheduler_job" and "create" in actions and after is not None and after.get("paused") is False:
+            problems.append(f"{addr}: Scheduler は paused=true で作る（再開は ops-start だけ）")
+        if typ in IAP_ACCESSOR_TYPES:
+            for m in _members(after):
+                if not (m.startswith("user:") or m.startswith("serviceAccount:")):
+                    problems.append(f"{addr}: IAP の許可に user:/serviceAccount: 以外の主体 {m} は拒否")
+        if typ.endswith("_iam_member") or typ.endswith("_iam_binding") or typ.endswith("_iam_policy"):
+            members = _members(after)
+            before_members = _members(before)
             for m in members or []:
                 if m in PUBLIC_MEMBERS and m not in (before_members or []):
                     if not any(typ == t and key in addr + json.dumps(after) for t, key in ALLOWED_PUBLIC):

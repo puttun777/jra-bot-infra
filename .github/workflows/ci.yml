@@ -8,6 +8,9 @@ permissions:
 concurrency:
   group: ci-${{ github.ref }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+defaults:
+  run:
+    shell: bash # -eo pipefail（パイプの途中の失敗を成功にしない）
 jobs:
   ops-tests:
     runs-on: ubuntu-latest
@@ -36,6 +39,7 @@ jobs:
         run: |
           if git ls-files | grep -E '\.(tfstate|tfvars)(\.|$)|\.tfstate\.backup$|(^|/)\.terraform/'; then echo "::error::tfstate/tfvars/.terraform が追跡されている"; exit 1; fi
   ci-gate:
+    name: ci gate
     needs: [ops-tests, terraform]
     if: always()
     runs-on: ubuntu-latest

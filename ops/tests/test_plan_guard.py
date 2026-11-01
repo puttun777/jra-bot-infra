@@ -53,5 +53,31 @@ class PlanGuardTests(unittest.TestCase):
         self.assertEqual(plan_guard.check(p, "NORMAL"), [])
 
 
+class PlanGuardReviewFixTests(unittest.TestCase):
+    def test_no_apply_while_starting_stopping_or_unknown(self):
+        p = plan(rc("google_cloud_run_v2_service", ["update"], {"ingress": "internal", "x": 1}, {"ingress": "internal", "x": 2}))
+        for m in ("STARTING", "STOPPING", "UNKNOWN"):
+            self.assertTrue(plan_guard.check(p, m), m)
+        self.assertEqual(plan_guard.check(plan(rc("google_cloud_run_v2_service", ["no-op"])), "STARTING"), [])
+
+    def test_iam_policy_with_public_member_is_rejected(self):
+        pol = '{"bindings":[{"role":"roles/run.invoker","members":["allUsers"]}]}'
+        r = rc("google_cloud_run_v2_service_iam_policy", ["create"], None, {"policy_data": pol}, "google_cloud_run_v2_service_iam_policy.dash")
+        self.assertTrue(plan_guard.check(plan(r), "NORMAL"))
+
+    def test_iap_accessor_only_users_and_service_accounts(self):
+        t = "google_iap_web_cloud_run_service_iam_member"
+        self.assertEqual(plan_guard.check(plan(rc(t, ["create"], None, {"member": "user:a@example.com"})), "NORMAL"), [])
+        self.assertEqual(plan_guard.check(plan(rc(t, ["create"], None, {"member": "serviceAccount:x@p.iam.gserviceaccount.com"})), "NORMAL"), [])
+        for bad in ("domain:example.com", "group:g@example.com", "allUsers"):
+            self.assertTrue(plan_guard.check(plan(rc(t, ["create"], None, {"member": bad})), "NORMAL"), bad)
+
+    def test_create_time_ingress_paused_and_invoker_iam(self):
+        self.assertTrue(plan_guard.check(plan(rc("google_cloud_run_v2_service", ["create"], None, {"ingress": "INGRESS_TRAFFIC_ALL"})), "NORMAL"))
+        self.assertEqual(plan_guard.check(plan(rc("google_cloud_run_v2_service", ["create"], None, {"ingress": "INGRESS_TRAFFIC_INTERNAL_ONLY"})), "NORMAL"), [])
+        self.assertTrue(plan_guard.check(plan(rc("google_cloud_scheduler_job", ["create"], None, {"paused": False})), "NORMAL"))
+        self.assertTrue(plan_guard.check(plan(rc("google_cloud_run_v2_service", ["update"], {"invoker_iam_disabled": False}, {"invoker_iam_disabled": True})), "NORMAL"))
+
+
 if __name__ == "__main__":
     unittest.main()

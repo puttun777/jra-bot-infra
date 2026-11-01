@@ -57,10 +57,8 @@ def collect(state: dict | None, gcp: Gcp, beacon_check=None) -> list[Row]:
         else:
             rows.append(Row(f"{name} ingress", want, str(ing), "ok" if ing == want else "ng"))
         if name.endswith("dashboard"):
-            if mode == "NORMAL" and not st.get("iap_enabled"):
-                rows.append(Row("dashboard IAP", "有効", "無効", "ng"))
-            else:
-                rows.append(Row("dashboard IAP", "有効", "有効" if st.get("iap_enabled") else "無効", "ok" if st.get("iap_enabled") else "warn"))
+            # IAP の無効化は run.services.update で可能なため、どのモードでも ❌（検知して通知する）
+            rows.append(Row("dashboard IAP", "有効", "有効" if st.get("iap_enabled") else "無効", "ok" if st.get("iap_enabled") else "ng"))
             members = int(st.get("iap_members", 0))
             rows.append(Row("dashboard 許可リスト件数", "1 件以上", str(members), "ok" if members >= 1 else "warn"))
     running = gcp.running_executions()

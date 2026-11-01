@@ -127,11 +127,21 @@ class StartTests(unittest.TestCase):
             ops2.start(inp(force=True, reason=" "))
 
     def test_start_in_normal_is_a_repair_that_does_not_change_the_mode_or_the_beacon(self):
-        ops, store, beacon, gcp, _ = make(state=running_state("NORMAL"))
+        st = running_state("NORMAL")
+        st["beacon"] = {"seq": 1, "mode": "NORMAL", "updated_at": "2026-11-01T09:00:00Z"}
+        ops, store, beacon, gcp, _ = make(state=st)
         gcp.sql.update(state="RUNNABLE", activation_policy="ALWAYS")
         ops.start(inp())
         self.assertEqual(store.state["mode"], "NORMAL")
         self.assertEqual(beacon.writes, [])
+
+    def test_start_repair_resigns_a_beacon_left_at_starting(self):
+        st = running_state("NORMAL")
+        st["beacon"] = {"seq": 1, "mode": "STARTING", "updated_at": "2026-11-01T09:00:00Z"}  # S10 成功・S11 失敗の後
+        ops, store, beacon, gcp, _ = make(state=st)
+        gcp.sql.update(state="RUNNABLE", activation_policy="ALWAYS")
+        ops.start(inp())
+        self.assertEqual([b["mode"] for b in beacon.writes], ["NORMAL"])
 
     def test_dry_run_changes_nothing_but_takes_and_releases_the_lease(self):
         ops, store, beacon, gcp, _ = make()
@@ -206,10 +216,21 @@ class StopTests(unittest.TestCase):
     def test_stop_in_stopped_repairs_an_unexpectedly_running_db(self):
         gcp = FakeGcp()
         gcp.sql.update(state="RUNNABLE", activation_policy="ALWAYS")
-        ops, store, beacon, gcp, _ = make(state=running_state("STOPPED"), gcp=gcp)
+        st = running_state("STOPPED")
+        st["beacon"] = {"seq": 1, "mode": "STOPPED", "updated_at": "2026-11-01T09:00:00Z"}
+        ops, store, beacon, gcp, _ = make(state=st, gcp=gcp)
         ops.stop(inp())
         self.assertEqual(gcp.sql["state"], "STOPPED")
-        self.assertEqual(beacon.writes, [])
+        self.assertEqual(beacon.writes, [])  # ビーコンが mode と一致していれば書き直さない
+
+    def test_repair_resigns_a_beacon_that_does_not_match_the_mode(self):
+        gcp = FakeGcp()
+        st = running_state("STOPPED")
+        st["beacon"] = {"seq": 1, "mode": "STOPPING", "updated_at": "2026-11-01T09:00:00Z"}  # S12 が失敗して残った状態
+        ops, store, beacon, gcp, _ = make(state=st, gcp=gcp)
+        ops.stop(inp())
+        self.assertEqual([b["mode"] for b in beacon.writes], ["STOPPED"])
+        self.assertEqual(store.state["beacon"]["mode"], "STOPPED")
 
     def test_backup_is_taken_before_the_db_stop_when_requested(self):
         st, gcp = self.normal()
@@ -255,6 +276,60 @@ class StateAndConcurrencyTests(unittest.TestCase):
         with self.assertRaises(Exception):
             ops.start(inp())
         self.assertNotIn("sql:ALWAYS", gcp.calls)
+
+    def test_unexpected_gcloud_failure_is_recorded_as_failed_and_releases_the_lease(self):
+        gcp = FakeGcp()
+        gcp.sql_set_activation = lambda policy: (_ for _ in ()).throw(RuntimeError("gcloud 失敗: sql patch"))
+        notes = []
+        ops, store, _, gcp, _ = make(state=running_state("STOPPED"), gcp=gcp)
+        ops.notify = lambda t, b: notes.append(t)
+        with self.assertRaises(StepFailed):
+            ops.start(inp())
+        st = store.state
+        self.assertIsNone(st["lease"])  # リースが 90 分残らない
+        self.assertEqual(st["operation"]["status"], "FAILED")
+        self.assertEqual([x["status"] for x in st["operation"]["steps"] if x["name"] == "S3_db_up"][-1], "FAILED")
+        self.assertEqual(st["mode"], "STARTING")  # NORMAL に戻さない
+        self.assertTrue(notes)
+        ops2 = Ops(store, FakeBeacon(), FakeGcp(), FakeClock(), KEY, "k")
+        ops2.start(inp(run_id="run-2"))  # 別 run_id の再実行が拒否されない
+        self.assertEqual(store.state["mode"], "NORMAL")
+
+    def test_measurement_failure_at_the_end_still_releases_the_lease(self):
+        st, gcp = StopTests.normal(self)
+        ops, store, _, gcp, _ = make(state=st, gcp=gcp)
+        orig = gcp.scheduler_states
+        calls = {"n": 0}
+
+        def flaky():
+            calls["n"] += 1
+            if calls["n"] > 0:
+                raise RuntimeError("測れない")
+            return orig()
+
+        gcp.scheduler_states = flaky
+        ops.stop(inp())
+        self.assertIsNone(store.state["lease"])
+        self.assertIn("error", store.state["last_actual"])
+
+    def test_db_stop_rechecks_running_jobs_even_when_earlier_steps_are_recorded_done(self):
+        st, gcp = StopTests.normal(self)
+        ops, store, _, gcp, _ = make(state=st, gcp=gcp)
+        orig = gcp.sql_set_activation
+
+        def fail(policy):
+            raise RuntimeError("DB 停止の呼出しが失敗")
+
+        gcp.sql_set_activation = fail
+        with self.assertRaises(StepFailed):
+            ops.stop(inp())
+        gcp.sql_set_activation = orig
+        gcp.executions = ["late-exec"]  # 失敗の後に新しい Job が起動した
+        gcp.cancel_works = False
+        ops2 = Ops(store, FakeBeacon(), gcp, FakeClock(), KEY, "k")
+        with self.assertRaises(StepFailed):
+            ops2.stop(inp(run_id="run-2"))
+        self.assertNotIn("sql:NEVER", gcp.calls)
 
     def test_schema_and_seq_are_validated(self):
         for bad in ({"schema_version": 2, "mode": "NORMAL", "seq": 1}, {"schema_version": 1, "mode": "X", "seq": 1}, {"schema_version": 1, "mode": "NORMAL", "seq": 0}):

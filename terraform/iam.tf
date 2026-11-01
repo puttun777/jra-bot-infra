@@ -158,7 +158,7 @@ resource "google_artifact_registry_repository_iam_member" "reader" {
 resource "google_project_iam_custom_role" "ops_controller" {
   role_id     = "jraBotOpsController"
   title       = "JRA Bot ops controller"
-  description = "start/stop/status が使う権限だけ（認証設定・IAM は変更できない）"
+  description = "start/stop/status が使う権限だけ。IAM は変更できない。注意: run.services.update は IAP の有効/無効も更新できてしまうため、status が IAP の無効を常に異常として検知する"
   permissions = [
     # Cloud SQL（停止/起動 = activation_policy、バックアップ、状態の読取り）
     "cloudsql.instances.get",
@@ -167,13 +167,12 @@ resource "google_project_iam_custom_role" "ops_controller" {
     "cloudsql.backupRuns.create",
     "cloudsql.backupRuns.get",
     "cloudsql.backupRuns.list",
-    # Cloud Run（ingress の更新、Job の実行状況・キャンセル、db-migration の validate）
+    # Cloud Run（ingress の更新、Job の実行状況・キャンセル）。Job の実行（引数付き）は db-migration の Job にだけ roles/run.jobsExecutorWithOverrides を付ける（cloud_run.tf）
     "run.services.get",
     "run.services.list",
     "run.services.update",
     "run.jobs.get",
     "run.jobs.list",
-    "run.jobs.run",
     "run.executions.get",
     "run.executions.list",
     "run.executions.cancel",
@@ -271,6 +270,15 @@ resource "google_project_iam_member" "tf" {
   member  = "serviceAccount:${google_service_account.sa["gha-tf"].email}"
 }
 
+# terraform が Cloud Run / Scheduler / Job を作るとき、実行 SA を actAs できる必要がある
+resource "google_service_account_iam_member" "tf_act_as" {
+  for_each = local.service_accounts
+
+  service_account_id = google_service_account.sa[each.key].name
+  role               = "roles/iam.serviceAccountUser"
+  member             = "serviceAccount:${google_service_account.sa["gha-tf"].email}"
+}
+
 # --- GitHub Actions → GCP（WIF。長期キー無し）
 resource "google_iam_workload_identity_pool" "github" {
   workload_identity_pool_id = "${local.prefix}-github"
@@ -305,12 +313,21 @@ locals {
   wif_principal_base = "principalSet://iam.googleapis.com/${google_iam_workload_identity_pool.github.name}"
 
   # 許可するワークフロー（main ブランチの対象ファイルだけ。tf は GitHub Environment `terraform` の承認を通ったジョブだけ）
+  wif_ref = "refs/heads/main"
+  wif_workflows = {
+    "ops-start"  = { sa = "gha-ops", file = "ops-start.yml" }
+    "ops-stop"   = { sa = "gha-ops", file = "ops-stop.yml" }
+    "ops-status" = { sa = "gha-ops", file = "ops-status.yml" }
+    "deploy"     = { sa = "gha-deploy", file = "deploy.yml" }
+    # terraform は main の対象ワークフローだけ（Environment の保護に加えて、コード側でも ref とワークフローを束縛する）
+    "terraform-plan"  = { sa = "gha-tf", file = "terraform-plan.yml" }
+    "terraform-apply" = { sa = "gha-tf", file = "terraform-apply.yml" }
+  }
   wif_bindings = {
-    "ops-start"  = { sa = "gha-ops", member = "${local.wif_principal_base}/attribute.workflow_ref/${var.github_repo_infra}/.github/workflows/ops-start.yml@refs/heads/main" }
-    "ops-stop"   = { sa = "gha-ops", member = "${local.wif_principal_base}/attribute.workflow_ref/${var.github_repo_infra}/.github/workflows/ops-stop.yml@refs/heads/main" }
-    "ops-status" = { sa = "gha-ops", member = "${local.wif_principal_base}/attribute.workflow_ref/${var.github_repo_infra}/.github/workflows/ops-status.yml@refs/heads/main" }
-    "deploy"     = { sa = "gha-deploy", member = "${local.wif_principal_base}/attribute.workflow_ref/${var.github_repo_infra}/.github/workflows/deploy.yml@refs/heads/main" }
-    "terraform"  = { sa = "gha-tf", member = "${local.wif_principal_base}/attribute.environment/terraform" }
+    for k, w in local.wif_workflows : k => {
+      sa     = w.sa
+      member = "${local.wif_principal_base}/attribute.workflow_ref/${var.github_repo_infra}/.github/workflows/${w.file}@${local.wif_ref}"
+    }
   }
 }
 

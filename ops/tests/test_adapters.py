@@ -67,12 +67,20 @@ class GcloudAdapterTests(unittest.TestCase):
         self.assertTrue(a3.service_reachable_externally("jra-bot-ingest"))
 
     def test_running_executions_and_run_job_exit_code(self):
-        ex = [{"metadata": {"name": "e1"}, "status": {"runningCount": 1}}, {"metadata": {"name": "e2"}, "status": {"runningCount": 0}}]
+        ex = [
+            {"metadata": {"name": "e1"}, "status": {"runningCount": 1}},
+            {"metadata": {"name": "e2"}, "status": {"runningCount": 0, "completionTime": "2026-11-01T00:00:00Z"}},
+            {"metadata": {"name": "e3"}, "status": {"runningCount": 0}},  # 開始待ち（まだ完了していない）も実行中として数える
+            {"metadata": {"name": "e4"}, "status": {"conditions": [{"type": "Completed", "status": "False"}]}},
+        ]
         a, _ = adapter({"executions list": (0, json.dumps(ex)), "jobs execute": (1, "ERROR: ... exit(10) ...")})
-        self.assertEqual(a.running_executions(), ["e1"])
+        self.assertEqual(a.running_executions(), ["e1", "e3"])
         self.assertEqual(a.run_job("jra-bot-db-migration", ["--mode=validate"]), 10)
         a2, _ = adapter({"jobs execute": (1, "boom")})
         self.assertEqual(a2.run_job("j", ["--mode=validate"]), 1)
+        # 出力に終了コードが無いときは、直近の execution の記述から探す。見つからなければ 1（fail closed）
+        a3, r3 = adapter({"jobs execute": (1, "boom"), "executions list": (0, json.dumps([{"status": {"conditions": [{"message": "Container called exit(10)."}]}}]))})
+        self.assertEqual(a3.run_job("j", ["--mode=validate"]), 10)
 
     def test_scheduler_states(self):
         d = [{"name": "projects/p/locations/l/jobs/jra-bot-reconcile", "state": "PAUSED"}]

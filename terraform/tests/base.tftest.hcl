@@ -83,13 +83,18 @@ run "github_federation_is_restricted_to_the_infra_repository" {
   }
   assert {
     condition = { for k, v in local.wif_bindings : k => v.sa } == {
-      "ops-start"  = "gha-ops"
-      "ops-stop"   = "gha-ops"
-      "ops-status" = "gha-ops"
-      "deploy"     = "gha-deploy"
-      "terraform"  = "gha-tf"
+      "ops-start"       = "gha-ops"
+      "ops-stop"        = "gha-ops"
+      "ops-status"      = "gha-ops"
+      "deploy"          = "gha-deploy"
+      "terraform-plan"  = "gha-tf"
+      "terraform-apply" = "gha-tf"
     }
     error_message = "WIF で借りられる SA は、対応するワークフローごとに 1 つだけ"
+  }
+  assert {
+    condition     = local.wif_ref == "refs/heads/main" && alltrue([for k, w in local.wif_workflows : endswith(w.file, ".yml")])
+    error_message = "すべての WIF 束縛は『main の特定ワークフロー』に限定する（Environment 名だけで SA を借りられない）"
   }
 }
 
@@ -108,6 +113,10 @@ run "ops_role_cannot_change_iam_or_iap" {
   assert {
     condition     = !anytrue([for p in google_project_iam_custom_role.ops_controller.permissions : can(regex("setIamPolicy|iap\\.web\\.setIamPolicy|iam\\.serviceAccounts\\.(create|delete)", p))])
     error_message = "ops ロールは IAM / IAP の変更権限を持たない"
+  }
+  assert {
+    condition     = !contains(google_project_iam_custom_role.ops_controller.permissions, "run.jobs.run") && !contains(google_project_iam_custom_role.deployer.permissions, "run.jobs.run")
+    error_message = "プロジェクト全体の run.jobs.run は付けない（db-migration の Job にだけ jobsExecutorWithOverrides）"
   }
   assert {
     condition     = contains(google_project_iam_custom_role.ops_controller.permissions, "cloudsql.instances.update") && contains(google_project_iam_custom_role.ops_controller.permissions, "cloudscheduler.jobs.pause")

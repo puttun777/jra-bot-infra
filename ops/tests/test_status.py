@@ -49,6 +49,12 @@ class StatusTests(unittest.TestCase):
         g.services["jra-bot-dashboard"]["iap_enabled"] = False
         self.assertEqual(verdicts(collect(st("NORMAL"), g))["dashboard IAP"], "ng")
 
+    def test_iap_disabled_is_flagged_in_every_mode(self):
+        for mode in ("STOPPED", "NORMAL"):
+            g = FakeGcp()
+            g.services["jra-bot-dashboard"]["iap_enabled"] = False
+            self.assertEqual(verdicts(collect(st(mode), g))["dashboard IAP"], "ng", mode)
+
     def test_failed_last_operation_is_shown(self):
         s = st("STARTING")
         s["operation"] = {"type": "start", "status": "FAILED", "current_step": "db-wait", "error": "timeout"}

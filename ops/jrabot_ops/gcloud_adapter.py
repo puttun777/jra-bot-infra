@@ -111,7 +111,13 @@ class GcloudAdapter:
     # ---- Cloud Run Jobs
     def running_executions(self) -> list[str]:
         d = self._json(["gcloud", "run", "jobs", "executions", "list", f"--region={self.region}"]) or []
-        return [e["metadata"]["name"] for e in d if int((e.get("status") or {}).get("runningCount", 0)) > 0]
+        # 『完了時刻が無い』ものを実行中として数える（runningCount だけだと、開始待ち・イメージ取得中を見落とす）。
+        out = []
+        for e in d:
+            st = e.get("status") or {}
+            if not st.get("completionTime") and not any(c.get("type") == "Completed" and c.get("status") in ("True", "False") for c in st.get("conditions", [])):
+                out.append(e["metadata"]["name"])
+        return out
 
     def cancel_execution(self, execution: str) -> None:
         self._ok(["gcloud", "run", "jobs", "executions", "cancel", execution, f"--region={self.region}"])
@@ -122,7 +128,17 @@ class GcloudAdapter:
         if code == 0:
             return 0
         m = re.search(r"exit\((\d+)\)", out)
-        return int(m.group(1)) if m else 1
+        if m:
+            return int(m.group(1))
+        # 出力に終了コードが無い場合は、直近の execution の記述から探す（形式は実 GCP で未確認: G-OPS-10）。見つからなければ 1（fail closed）
+        try:
+            d = self._json(["gcloud", "run", "jobs", "executions", "list", f"--job={job}", f"--region={self.region}", "--limit=1"]) or []
+            m = re.search(r"exit\((\d+)\)", json.dumps(d))
+            if m:
+                return int(m.group(1))
+        except RuntimeError:
+            pass
+        return 1
 
     def job_set_image(self, job: str, image: str) -> None:
         """deploy 用。イメージだけを更新する（環境変数・Secret・args・実行はしない）。"""
