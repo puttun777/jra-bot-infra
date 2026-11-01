@@ -96,7 +96,16 @@ def main(argv: list[str] | None = None) -> int:
     g.add_argument("--allow-destroy", action="store_true")
     a = ap.parse_args(argv)
     # GitHub Actions のキャンセルは SIGINT → SIGTERM。例外に変えて、リースの解放と FAILED の記録を行わせる
-    signal.signal(signal.SIGTERM, lambda *_: (_ for _ in ()).throw(KeyboardInterrupt("SIGTERM")))
+    # 例外にするのは**最初の 1 回だけ**（解放処理の最中に 2 回目の SIGINT/SIGTERM が来ても中断されない）
+    fired = []
+
+    def _on_signal(signum, _frame):
+        if not fired:
+            fired.append(signum)
+            raise KeyboardInterrupt(signal.Signals(signum).name)
+
+    signal.signal(signal.SIGTERM, _on_signal)
+    signal.signal(signal.SIGINT, _on_signal)
 
     if a.cmd == "plan-guard":
         problems = plan_guard.check(plan_guard.load(a.plan_json), a.mode, a.allow_destroy)

@@ -64,4 +64,4 @@
 | Terraform | `fmt` / `validate`（実プロバイダのスキーマ）/ `terraform test`（mock）済み。**実 GCP に対する `plan` は未実施**（認証が必要） |
 | workflow | YAML 構文のみ。**GitHub 上での実行は未実施**（Environment・変数・WIF の設定後に実行） |
 | 検証ゲート G-OPS-1〜9 | 未実施（実リソースが必要） |
-| 追加の未確認（独立レビュー由来） | G-OPS-10: `gcloud run jobs execute --wait` 失敗時に db-migration の終了コード 10 を取れるか（取れないと start/deploy は『未適用あり』を『不整合』として止まる = 安全側）。DB が停止中に `terraform plan`/`apply` の refresh が Cloud SQL のユーザー・DB を読めるか（読めない場合は apply の前に ops-start が必要になる）、IAP のサービスエージェント（`service-<番号>@gcp-sa-iap…`）が apply 時点で存在するか、IAP の audience、`ingress=internal` の外部応答コード |
+| 追加の未確認（独立レビュー由来） | G-OPS-10: `gcloud run jobs execute --wait` 失敗時に db-migration の終了コード 10 を取れるか（取れないと start/deploy は『未適用あり』を『不整合』として止まる = 安全側）。キャンセル時に runner のシグナル（SIGINT → 約 7.5 秒後に SIGTERM → SIGKILL）が `python | tee` の python まで届き、リース解放の commit が間に合うか（G-OPS-11。解放は計測より先に書く設計）、DB が停止中に `terraform plan`/`apply` の refresh が Cloud SQL のユーザー・DB を読めるか（読めない場合は apply の前に ops-start が必要になる）、IAP のサービスエージェント（`service-<番号>@gcp-sa-iap…`）が apply 時点で存在するか、IAP の audience、`ingress=internal` の外部応答コード |

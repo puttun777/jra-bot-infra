@@ -317,6 +317,25 @@ class StateAndConcurrencyTests(unittest.TestCase):
         self.assertIsNone(store.state["lease"])
         self.assertEqual(store.state["operation"]["status"], "FAILED")
 
+    def test_a_second_interrupt_during_measurement_does_not_leave_the_lease(self):
+        gcp = FakeGcp()
+        gcp.sql_set_activation = lambda policy: (_ for _ in ()).throw(KeyboardInterrupt("SIGINT"))
+        calls = {"n": 0}
+        orig = gcp.sql_state
+
+        def sql_state():
+            calls["n"] += 1
+            if calls["n"] >= 2:  # 解放処理の中の計測で 2 回目のシグナル
+                raise KeyboardInterrupt("SIGTERM")
+            return orig()
+
+        gcp.sql_state = sql_state
+        ops, store, _, gcp, _ = make(state=running_state("STOPPED"), gcp=gcp)
+        with self.assertRaises(KeyboardInterrupt):
+            ops.start(inp())
+        self.assertIsNone(store.state["lease"], "計測の前にリースを解放して書いてある")
+        self.assertEqual(store.state["operation"]["status"], "FAILED")
+
     def test_unexpected_gcloud_failure_is_recorded_as_failed_and_releases_the_lease(self):
         gcp = FakeGcp()
         gcp.sql_set_activation = lambda policy: (_ for _ in ()).throw(RuntimeError("gcloud 失敗: sql patch"))

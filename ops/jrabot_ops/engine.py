@@ -104,14 +104,21 @@ class Ops:
         return kind
 
     def _end(self, ok: bool, error: str | None) -> None:
-        """操作の終了。**計測に失敗してもリースは必ず解放する**（解放できないと次の実行が 90 分拒否される）。"""
+        """操作の終了。**先にリースの解放と結果（FAILED/SUCCEEDED）を書く**。実状態の計測は後から別の書込みで行い、失敗・中断しても無視する
+        （計測は gcloud を何度も呼ぶので、キャンセル時の猶予〔SIGINT から SIGKILL まで約 10 秒〕に収まらないことがある）。"""
         s = S.finish(self.state, ok, self.clock.now(), error)
         s = S.release_lease(s, self.state["lease"]["holder"] if self.state.get("lease") else "")
-        try:
-            s["last_actual"] = self._measure()
-        except Exception as e:  # noqa: BLE001
-            s["last_actual"] = {"captured_at": self.clock.now(), "error": f"{type(e).__name__}: {str(e)[:200]}"}
         self._commit(s, "end")
+        try:
+            measured = copy.deepcopy(self.state)
+            measured["last_actual"] = self._measure()
+        except BaseException as e:  # noqa: BLE001 - 計測の失敗・中断は結果に影響させない
+            measured = copy.deepcopy(self.state)
+            measured["last_actual"] = {"captured_at": self.clock.now(), "error": f"{type(e).__name__}: {str(e)[:200]}"}
+        try:
+            self._commit(measured, "end-measured")
+        except BaseException:  # noqa: BLE001
+            pass
 
     def _measure(self) -> dict:
         sql = self.gcp.sql_state()
