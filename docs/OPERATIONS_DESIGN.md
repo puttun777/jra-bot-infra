@@ -71,12 +71,12 @@ stateDiagram-v2
 
 ### 2.4 アプリ側の読み方（web への要求、CONTRACTS へ反映）
 - `ModeProvider` は GCS から `ops-state.json` を読み、15 秒キャッシュ。**読めない場合は `UNKNOWN` = NORMAL 扱いしない**。
-- bot / calendar-check: 起動直後、DB 接続より先にモード確認。`NORMAL` 以外・UNKNOWN なら終了（exit 0、理由を記録。再試行しない）。
+- bot / calendar-check: 起動直後、DB 接続より先にモード確認。**確定した非 NORMAL（STARTING/STOPPING/STOPPED）なら終了 exit 0**（理由 `MODE_<mode>` を記録。再試行しない）。**UNKNOWN（読めない・不正）は exit 75**（開催日に GCS 障害で何もしなかったことに気付けるようにするため。web CONTRACTS §9.1、D-048。T5.0 で同期: I-H1）。status と通知では 75 を異常として扱う。
 - ingest: `NORMAL` 以外は DB に触れず `503 + X-Ops-Mode: <mode>`（UNKNOWN は `X-Ops-Mode` なし）。
 - dashboard: `NORMAL` 以外は上部に固定バナー。STOPPED では ingress が内部限定のため到達不能（§4.2）。
 
 ## 3. モード署名付きビーコン
-- 形式（web CONTRACTS §7.2 と同一）: `{ "mode", "phase", "seq", "updatedAt", "validUntil"?, "sig" }`。`sig = Ed25519(秘密鍵, canonical_json(他フィールド))`。
+- 形式（web CONTRACTS §7.2 と同一。**T5.0 で同期: I-H4**）: `{ "schema_version", "kid", "mode", "seq", "updatedAt", "validUntil"?, "sig" }`。**`phase` は廃止**（`mode` が現在のフェーズ。意図は ops-state.json の `desired`）。`kid` は署名鍵の識別子（エージェントは最大 2 本の公開鍵〔`MODE_BEACON_PUBKEYS`〕から `kid` で選ぶ）。`sig = Ed25519(秘密鍵, canonical_json(他フィールド))`。
 - **秘密鍵の保管: Secret Manager**（`beacon-signing-key`）。`sa-gha-ops` のみ `secretAccessor`。GitHub のシークレットには置かない（長期の秘密を GitHub に置かない方針。web CONTRACTS の「CI シークレット」記述は修正依頼: §11）。
 - 公開鍵はエージェントに埋め込み（web 側の配布物）。鍵ローテーション時は新旧 2 鍵を受理する期間を設ける（web 側）。
 - 書込: `Cache-Control: no-store`、`Content-Type: application/json`。
@@ -111,8 +111,8 @@ stateDiagram-v2
 | S1 | `mode=STARTING`、`desired=NORMAL` | CAS 書込 + 履歴 | 同値なら書込のみ | 中断 |
 | S2 | ビーコン `STARTING` | 署名・書込（エージェントは待機のまま） | 同上 | 中断（S1 のまま=安全） |
 | S3 | DB 起動 | `activation-policy=ALWAYS`、`RUNNABLE` まで待機（上限 20 分） | 既に RUNNABLE ならスキップ | `STARTING(FAILED)` で終了。再実行で続行 |
-| S4 | DB 正常性 | `db-migration` Job を `info/validate` モードで実行（接続・スキーマ検証） | 読み取りのみ | 同上 |
-| S5 | マイグレーション確認 | 保留中の版があれば、`apply_pending_migrations=true` のときのみ `migrate` を実行。false なら**失敗として停止**（通常の適用は deploy ワークフローの責務） | Flyway が冪等 | 同上 |
+| S4 | DB 正常性 | `db-migration` Job を `--mode=validate` で実行（接続・スキーマ検証）。**終了コード: 0=適用済みが正しく未適用なし／10=正しいが未適用あり／1=不一致・失敗版あり／75=DB 不達**（web CONTRACTS §4.2。I-H2） | 読み取りのみ | 同上 |
+| S5 | マイグレーション確認 | **S4 の終了コードが 10（未適用あり）のとき**、`apply_pending_migrations=true` のときのみ `migrate` を実行。false なら**失敗として停止**（通常の適用は deploy ワークフローの責務） | Flyway が冪等 | 同上 |
 | S6 | ingest 復帰 | `ingress=all`（IAP なし・アプリ認証のみのサービス。モードがまだ STARTING なので受付は 503） | 同上 | 同上 |
 | S7 | dashboard 復帰 | **事前に IAP 有効・許可リスト非空を検証**してから `ingress=all` | 同上 | IAP 検証失敗なら ingress を開けずに失敗 |
 | S8 | ヘルスチェック | ingest `/internal/ready`（`sa-gha-ops` の ID トークンをアプリが検証）、dashboard `/internal/ready`（IAP をプログラムで通過: `sa-gha-ops` に dashboard の `iap.httpsResourceAccessor`） | 読み取り | 同上 |
@@ -227,7 +227,7 @@ stateDiagram-v2
 | G-OPS-1 | `ingress=internal` の Cloud Run（直接 IAP 有効）に外部から到達できないこと、`ingress=all` 復帰で IAP が維持されること | IAP + 許可リスト空化はしない。代替は「サービスの min/max 調整 + アプリの STOPPED 応答」 |
 | G-OPS-2 | `activation-policy` の NEVER/ALWAYS 切替時間、停止中の課金項目（請求レポートで IP 課金がないこと） | 停止時間の見積りを更新 |
 | G-OPS-3 | **停止中の Cloud SQL がメンテナンスで起動しないか**（メンテナンス枠をまたいで停止を維持し、定期 status で観測） | 起動する場合は「停止中に定期 stop（修復）」の頻度を上げる、またはメンテナンス枠・拒否期間の設定 |
-| G-OPS-4 | Cloud Run Jobs の execution cancel 時のシグナルと猶予時間、bot の checkpoint 保存 | 排出（DRAINING）待ちを長くする |
+| G-OPS-4 | Cloud Run Jobs の execution cancel 時のシグナルと猶予時間（**アプリは猶予 10 秒を前提**。bot-run は SIGTERM で checkpoint を保存し `INTERRUPTED`。NORMAL 中に cancel されたら exit 75。I-H7）、bot の checkpoint 保存 | 排出（DRAINING）待ちを長くする |
 | G-OPS-5 | Cloud Run Jobs のタスク最大実行時間が bot-run の上限（14 時間）を満たすこと | 満たさない場合は bot-run を時間帯で分割し checkpoint から再開（RACE_CALENDAR の再開機能を使用） |
 | G-OPS-6 | GCS の `ifGenerationMatch` による CAS、オブジェクトバージョニングでの復元 | — |
 | G-OPS-7 | IAP のプログラムからの通過（`sa-gha-ops` の ID トークン）と、アプリ側の ID トークン検証 | ヘルスチェックを Cloud Run の Ready 状態のみに縮退 |
