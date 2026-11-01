@@ -236,6 +236,8 @@ resource "google_cloud_run_v2_job" "bot" {
             local.db_env,
             { DB_USER = "bot", DB_POOL_MAX = each.value.pool_max, MODEL_STORE_URI = "gs://${local.buckets.model_store}" },
             { for k, v in local.runtime_env : k => v if each.value.with_runtime || startswith(k, "CALENDAR_") },
+            # calendar-check だけが bot-run を起動する（web CONTRACTS §5.2 の RUN_JOBS_*。Job 名は <prefix>-<task>）
+            each.key == "calendar-check" ? { RUN_JOBS_PROJECT_ID = var.project_id, RUN_JOBS_REGION = var.region, RUN_JOBS_PREFIX = local.prefix } : {},
           )
           content {
             name  = env.key

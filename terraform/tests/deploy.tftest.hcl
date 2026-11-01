@@ -139,3 +139,15 @@ run "missing_operational_values_are_rejected" {
   }
   expect_failures = [var.app_runtime]
 }
+
+run "calendar_check_receives_the_job_launch_target_and_others_do_not" {
+  command = plan
+
+  assert {
+    condition = (
+      length([for e in google_cloud_run_v2_job.bot["calendar-check"].template[0].template[0].containers[0].env : e if e.name == "RUN_JOBS_PROJECT_ID"]) == 1 &&
+      length([for e in google_cloud_run_v2_job.bot["bot-run"].template[0].template[0].containers[0].env : e if e.name == "RUN_JOBS_PROJECT_ID"]) == 0
+    )
+    error_message = "RUN_JOBS_* は calendar-check だけに渡す（bot-run など他の Job は他の Job を起動しない）"
+  }
+}
