@@ -1,5 +1,7 @@
 # ARCHITECTURE（インフラ: GCP 採用設計・第1段階確定版）
 
+**T5.0 同期（2026-11-01）**: web CONTRACTS 0.4.15 に合わせて Jobs・DB ユーザー・接続プール・環境変数・スキーマ版を更新した（下の `[T5.0]` 印）。差分の一覧と根拠は `CONTRACTS.md` §5。
+
 更新: 2026-10-22（T1.7/T1.8 設計確定）。**設計上の採用であり、GCP の契約・課金リソース作成の承認ではない**。費用は `CLOUD_COSTS.md`、運用は `OPERATIONS_DESIGN.md`、契約の正本は jra-bot-web `docs/CONTRACTS.md`。
 
 ## 1. 全体構成（単一プロジェクト・東京 asia-northeast1）
@@ -24,7 +26,7 @@
 |---|---|---|
 | **dashboard**（Cloud Run service） | min=0、**max=2**、concurrency=40、1 vCPU/1 GiB、**リクエスト課金**、直接 IAP、ingress は ops 管理 | スケールゼロ。max で暴走費用を抑える |
 | **ingest**（Cloud Run service） | min=0、**max=2**、concurrency=20、1 vCPU/1 GiB、リクエスト課金、IAP なし（アプリ認証: トークン+HMAC）、invoker は allUsers（認証はアプリ層） | 機械クライアントのため IAP 外（web D-020）。STOPPED は ingress=internal |
-| **bot**（Cloud Run Job, 同一イメージで `--task=run|calendar-check|reconcile|retention|export-dataset|backfill`） | bot-run: 1 vCPU/2 GiB、`max-retries=0`、タスクタイムアウト 14h（**G-OPS-5 で上限確認**）、並列 1。calendar-check: 0.5 vCPU/1 GiB、タイムアウト 5 分 | 必要時間帯のみ実行 |
+| **bot**（Cloud Run Job, **[T5.0] 同一イメージで `--task=bot-run|calendar-check|reconcile|retention|export-dataset`**。`backfill` は Job ではなく ingest の API〔バックフィル要求〕。ml-train の引数は `--tenant-id --dataset-id`〔I-H6〕） | bot-run: 1 vCPU/2 GiB、`max-retries=0`、タスクタイムアウト 14h（**G-OPS-5 で上限確認**）、並列 1。calendar-check: 0.5 vCPU/1 GiB、タイムアウト 5 分 | 必要時間帯のみ実行 |
 | **db-migration**（Job） | Flyway。`migrate` は deploy（NORMAL）時のみ、`info/validate` は start でも使用 | 起動時 migrate はしない（CONTRACTS §4） |
 | **ml-train**（Job, Python イメージ） | 2 vCPU/4 GiB、タイムアウト 1h、手動/Scheduler（初期 paused） | 常駐しない |
 | **Cloud SQL for MySQL** | **Enterprise エディション（明示指定）**、**db-g1-small**（共有コア 1.7 GB）、**MySQL 8.4 LTS を暫定基準**（9.7 は第2段階の互換検証ゲート後に再判断）、SSD 20 GB（自動拡張あり・上限 50 GB）、**プライベート IP のみ（公開 IP なし）**、自動バックアップ毎日・保持 7、PITR は初期オフ、HA なし、メンテナンス枠 = 火曜 03:00 JST 付近（開催の少ない曜日。G-OPS-3 で停止中の挙動を検証）、`deletion_protection=true` | §3 |
@@ -41,7 +43,7 @@
 | エディション | **Enterprise** を採用。Enterprise Plus は高性能・高可用（データキャッシュ、メンテナンスのほぼ無停止など）だが高額で、**共有コア（db-f1-micro / db-g1-small）は Enterprise のみ**。**MySQL 8.4 / 9.7 はエディション未指定だと Enterprise Plus が既定** → **必ず Enterprise を明示** | 公式ドキュメントの検索抜粋（choose-edition, create-instance） |
 | MySQL 版 | Cloud SQL では 8.0 / 8.4 / 9.7 が選択可（9.7 GA は 2026-08-13）。Flyway の公式「検証済み版」は 5.7 / 8.0 / 9.4（2025-01 時点の記載）で **8.4・9.7 は明記なし**。Connector/J 9.7.0（Boot BOM）、Doma の MySQL 方言は版非依存の想定 → **互換性が確認できていないため 8.4 LTS を暫定基準**（ユーザー方針）。9.7 は第2段階で Testcontainers（Flyway 13.11.1 + Connector/J 9.7.0 + Doma 3.14.1）で検証し、通れば再判断（web D-015 の更新が必要: 引継ぎ） | 検索抜粋 + VERSIONS |
 | マシン | **db-g1-small**（共有 vCPU、1.7 GB、ストレージ上限約 3 TB、SLA 対象外）を第一候補。**db-f1-micro（0.6 GB）は不採用**（MySQL 8.4 のメモリ要件・接続数で不足の恐れ。検証なしに採用しない）。8.4/9.7 での共有コア提供可否は**未確認**（G-DB-1）。不可の場合の代替は `db-custom-1-3840`（1 vCPU/3.75 GB, 推定 +¥4,800/月） | 料金ページ（Iowa 単価）+ 検索 |
-| 接続数 | db-g1-small の `max_connections` 既定は 1,000 との第三者記載（**未確認**）。アプリの接続プール合計は ≤ 25 に制限（dashboard 5、ingest 5、bot 5、calendar-check 2、reconcile 2、migrate 2、ml-train 2）→ 余裕あり | 第三者 |
+| 接続数 | db-g1-small の `max_connections` 既定は 1,000 との第三者記載（**未確認**）。**[T5.0] アプリの接続プール合計は 24（≤ 25）**（web CONTRACTS §8.3: dashboard 3×最大 2 インスタンス、ingest 3×2、bot-run 4、calendar-check/reconcile/retention 各 1、export-dataset 2、db-migration 2、ml-train 1。`DB_POOL_MAX` で上書き可。インスタンス数を増やしたら合計を再計算）→ 余裕あり | 第三者 |
 | 性能 | 共有 CPU のバースト。想定負荷（オッズ書込: 1 サイクル数十行、ダッシュボード 2 名）では十分の見込み。第2段階で負荷試験（G-DB-4） | 推定 |
 | ストレージ | SSD（HDD は月数百円安いが書込性能が低い）。20 GB から開始・自動拡張は上限 50 GB（費用の暴走防止） | 料金ページ |
 | 停止・復帰 | `activation-policy=NEVER` で停止（**手動で開始するまで停止のまま**: 公式記述の抜粋）、`ALWAYS` で起動。**停止中もストレージと IP の課金は継続**（公開 IP を持たない設計。プライベート IP の課金有無は G-OPS-2） | 公式抜粋 |
@@ -58,7 +60,7 @@
 | 人（2 名） | dashboard は**直接 IAP**。許可は `roles/iap.httpsResourceAccessor` を**個人のメール**に付与（Terraform 管理）。**初期は誰にも付与しない＝全拒否**。アプリ側でも IAP の JWT を検証し、`app_user`（tenant・role）未登録は 403（web FRONTEND_DESIGN §4.4）。管理操作は `ROLE_ADMIN` |
 | 機械: エージェント | ingest のアプリ認証（トークンはハッシュ保管、HMAC 署名、リプレイ防止、失効）。IAP の外（web CONTRACTS §3.3）。STOPPED は ingress=internal でさらに遮断 |
 | 機械: GitHub Actions | OIDC → WIF（リポジトリ・ブランチ・ワークフローで条件付け）。**長期 SA キーなし**。操作ごとに SA を分離（OPERATIONS_DESIGN §11） |
-| 機械: ランタイム | サービス/ジョブごとの SA。DB ユーザーも用途別（`app_rw` / `ingest_rw` / `bot_rw` / `migrate_ddl` / `mltrain` 限定 INSERT）。Cloud SQL の管理権限はランタイムに与えない（DB を起動できない） |
+| 機械: ランタイム | サービス/ジョブごとの SA。DB ユーザーも用途別（**[T5.0] 名前は `migrate` / `app` / `ingest` / `bot` / `mltrain`**〔web CONTRACTS §8.2〕。**Terraform はユーザーの作成とパスワードの Secret 化だけを行い、GRANT は web の Flyway `R__grants.sql` が `REVOKE ALL` → 最小限の GRANT で定義する**。`migrate` には `GRANT ALL ON <schema>.* WITH GRANT OPTION` まで infra が付ける。G-DB-6 で Cloud SQL のユーザー既定権限と GRANT 可能範囲を検証。`mltrain` は `ml_model` の SELECT/INSERT のみ）。Cloud SQL の管理権限はランタイムに与えない（DB を起動できない） |
 | ネットワーク | Cloud SQL はプライベート IP のみ、公開 IP なし、Cloud SQL Auth Proxy 不要（Direct VPC egress 経由の JDBC + TLS 強制）。IAM DB 認証は第2段階で検証（G-DB-5）し、可能ならパスワードを廃止 |
 | 秘密 | Secret Manager のみ。GitHub のシークレットには長期の秘密を置かない（WIF の設定値=非秘密のみ） |
 | データ分離 | `tenant_id`（web D-023/D-039）。インフラ側は DB をテナントで分けない（共有スキーマ）。モデル/データセットのバケットはパスを `/{tenant_id}/` で分け、IAM はバケット単位（将来必要ならテナント別バケット） |

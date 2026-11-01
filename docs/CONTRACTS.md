@@ -1,6 +1,6 @@
 # CONTRACTS（インフラ側）
 
-**正本: jra-bot-web `docs/CONTRACTS.md`（contract_version 0.3.0-draft、2026-10-22 時点の main fa5e59c で確認）**。本ファイルは正本の各項目を**インフラでどう実現するか**と、**正本との差異（web 側での修正が必要なもの）**だけを書く。infra 側で契約を独自に変更しない（I-002）。同期作業 = T1.18（2026-10-22）。
+**正本: jra-bot-web `docs/CONTRACTS.md`。2026-11-01 の T5.0 で contract_version 0.4.15（web main 73f74c8）に同期した**（§5）。以下の §1〜§4 は 0.3.0-draft 時点の記述で、§5 の同期表が優先する。本ファイルは正本の各項目を**インフラでどう実現するか**と、**正本との差異（web 側での修正が必要なもの）**だけを書く。infra 側で契約を独自に変更しない（I-002）。同期作業 = T1.18（2026-10-22）。
 
 ## 1. 正本項目 → インフラでの実現
 | 正本の項目（web CONTRACTS） | インフラでの実現 | 状態 |
@@ -18,7 +18,8 @@
 | §7.2 ビーコン（静的 JSON、Ed25519、seq 単調、no-store、stop 最初/start 最後） | `mode-beacon` バケット（このオブジェクトのみ公開）。署名鍵は **Secret Manager**（`beacon-signing-key`, `sa-gha-ops` のみ） | 同期済み（**鍵の保管場所の記述が正本と異なる: 差異 D2**） |
 | §7.5 infra の義務 1〜5 | 1: OPERATIONS_DESIGN §3、2: ingest のモード判定（DB 非依存）、3: STOPPED で ingest を ingress=internal、4: status にビーコン値・ingest 応答・エージェント最終接続、5: Terraform はバケットのみ管理 | 同期済み |
 
-## 2. 正本との差異（web 側での修正が必要 → Stage 1-D② へ引継ぎ）
+## 2. 正本との差異 D1〜D12（**解消済み**: web 0.4.0 で解消。web CONTRACTS §12。infra 側の追従は §5 の I-H1〜I-H9）
+以下は当時の提案の記録。
 | ID | 差異 | 提案（web CONTRACTS の修正内容） |
 |---|---|---|
 | **D1** | §3.2 の `/internal/ops/mode` は `desired: NORMAL\|STOPPED` と `phase` を併記、§5 は `phase` 4 値。用語が混在 | 状態のフィールドを `mode`（`NORMAL/STARTING/STOPPING/STOPPED` = 現在のフェーズ）と `desired`（`NORMAL/STOPPED` = 意図）に統一。ビーコンは `mode` を必須、`phase` は互換のため同値で併記（または削除） |
@@ -34,7 +35,7 @@
 | **D11** | STOPPED 中の dashboard | STOPPED では ingress=internal のため**到達不能**（STOPPED バナーは STARTING/STOPPING 中のみ表示される）。web FRONTEND_DESIGN §2.9 の注記と一致させる |
 | **D12** | ml-train が DB に CANDIDATE を書く権限 | DB ユーザー `mltrain` は `ml_model` への INSERT と `ml_model` の自テナント SELECT のみ。データセットは GCS から読み、DB の他テーブルに触れない |
 
-## 3. `release-manifest.json`（提案, schema_version 1）
+## 3. `release-manifest.json`（**[T5.0] 正本は web CONTRACTS §10 の schema_version 2。下の JSON は提案時の記録で使わない**）
 ```json
 {
   "schema_version": 1,
@@ -65,3 +66,48 @@
 | `status` 出力 | Job Summary（Markdown 表）+ `status.json`（Artifact）: `{desired, mode, operation, actual:{db, dashboard, ingest, scheduler, executions, beacon, agent_last_seen}, mismatches[], contract_version}` |
 | Secret 名 | `db-app-password`、`db-ingest-password`、`db-bot-password`、`db-migrate-password`、`db-mltrain-password`、`discord-webhook`、`discord-error-webhook`、`ingest-token-pepper`、`beacon-signing-key`、`model-signing-key`、`iap-oauth-client-secret`（第5段階で確定し web CONTRACTS §2 に反映） |
 | 権限 | OPERATIONS_DESIGN §11、ARCHITECTURE §5 |
+
+
+## 5. T5.0 同期表（web CONTRACTS 0.4.15 → infra。2026-11-01）
+**この表が §1〜§4 より優先する。** infra の実装（第5段階）はこの表を入力にする。web の変更は web のセッション/PR で行い、infra はこの文書を追従させる。
+
+### 5.1 引継ぎ項目 I-H1〜I-H9
+| ID | web の契約 | infra の実現・更新箇所 | 状態 |
+|---|---|---|---|
+| I-H1 | モード **UNKNOWN の Job は exit 75**、確定した非 NORMAL は exit 0（§9.1） | OPERATIONS_DESIGN §2.4 を更新。status と通知は 75 を異常扱い | 文書同期済み |
+| I-H2 | `db-migration --mode=validate` の終了コード **10 = 未適用あり**（0 / 1 / 75） | OPERATIONS_DESIGN §5 S4・S5 を更新（S5 は 10 のときだけ migrate 判定） | 文書同期済み |
+| I-H3 | release-manifest **schema_version 2**: `required_schema_version`・`rollback.min_app_release`・`feature_schemas`/`feature_schema_hash`・`runtime`。`contract_version` のメジャー不一致は deploy 拒否 | deploy ワークフロー（T5.3）が JSON Schema（web `docs/schemas/release-manifest.v1.json`）で検証。プレビュー manifest（`kind`/`deployable`）は拒否 | 実装は T5.3 |
+| I-H4 | ビーコンは `{schema_version, kid, mode, seq, updatedAt, validUntil?, sig}`（**`phase` 廃止**）。環境変数 `AGENT_HEARTBEAT_PREFIX`・`INTERNAL_ID_TOKEN_AUDIENCE`・`OPS_SA_EMAIL`・`DB_POOL_MAX`・`DISCORD_ERROR_WEBHOOK_URL`・`MODE_BEACON_PUBKEYS`（最大 2 本） | OPERATIONS_DESIGN §3 を更新。環境変数は §5.2 | 文書同期済み / Terraform は T5.2 |
+| I-H5 | DB ユーザー `migrate`/`app`/`ingest`/`bot`/`mltrain`。Terraform はユーザー作成と Secret のみ、GRANT は web `R__grants.sql`。プール合計 24 | ARCHITECTURE §2・§3・§5 を更新 | 文書同期済み。G-DB-6 は実機検証 |
+| I-H6 | calendar-check・reconcile・retention・export-dataset は **bot イメージ + `--task=`**（`bot-run` も同じ）。ml-train は `--tenant-id --dataset-id` | ARCHITECTURE §2 を更新（`backfill` は Job でなく ingest API） | 文書同期済み |
+| I-H7 | cancel の猶予は **10 秒を前提**。bot-run は NORMAL 中の cancel で exit 75 | OPERATIONS_DESIGN G-OPS-4 を更新 | 文書同期済み / 実測は G-OPS-4 |
+| I-H8 | `APP_ENV`（`local`/`prod`）を**全アプリに必須で渡す**。`REQUIRED_SCHEMA_VERSION` は渡さない（jar に焼き込み）。dashboard は `IAP_AUDIENCE`・`OPS_SA_EMAIL`、ingest は `INTERNAL_ID_TOKEN_AUDIENCE`・`OPS_SA_EMAIL` が無いと起動しない。本番の DB ユーザーは `app`/`ingest`/`bot` 以外だと起動拒否 | §5.2 の環境変数表 | Terraform は T5.2 |
+| I-H9 | イメージ名は `asia-northeast1-docker.pkg.dev/<prj>/jra-bot/<name>@sha256:<64桁>` の **5 つ**（dashboard・ingest・bot・db-migration・ml-train）。ml-train が無い間は本番 manifest を生成できない | deploy はこの形式のみ受理（T5.3） | 実装は T5.3 |
+
+### 5.2 環境変数（infra → app。Terraform / Secret Manager。web CONTRACTS §2 が正本）
+| 対象 | 必須/任意 | 変数（運用値は未確定のものは **Terraform 変数にして既定値を置かない**） |
+|---|---|---|
+| 全アプリ | 必須 | `APP_ENV=prod`、`TZ=Asia/Tokyo`、`DB_URL`（`sslMode=VERIFY_CA`）、`DB_USER`/`DB_PASSWORD`（Secret `db-<用途>-password`）、`DB_POOL_MAX`、`OPS_MODE_SOURCE=gs://<prj>-ops-state/state/ops-state.json` |
+| dashboard | 必須 | `IAP_AUDIENCE`、`OPS_SA_EMAIL`、`ALLOWED_USERS`/`ADMIN_USERS`（**空なら全拒否**）|
+| ingest | 必須 | `INTERNAL_ID_TOKEN_AUDIENCE`、`OPS_SA_EMAIL`、`AGENT_HEARTBEAT_PREFIX=gs://<prj>-ops-state/agent/`、`INGEST_TOKEN_PEPPER`（Secret `ingest-token-pepper`）、`AGENT_KEK_KEYS`/`AGENT_KEK_ACTIVE_KID`（Secret `agent-kek`。本番必須、無いと起動失敗。**提案 P-1: 要承認**）|
+| ingest | 任意 | `INGEST_ODDS_BELOW_PAR`（`quarantine` 既定）、`INGEST_STORE_COMBO_ODDS`（既定 false）、`INGEST_MAX_BODY_BYTES`/`INGEST_MAX_INFLATED_BYTES`。**`INGEST_ACCEPT_NORMALIZED_RECORDS` は本番で設定しない**（true だと起動失敗）|
+| bot（全 `--task`） | 必須 | `MODEL_STORE_URI=gs://<prj>-model-store`（ML 有効時）|
+| bot `--task=calendar-check` | 必須（**運用値未確定: 既定なし**）| `CALENDAR_WATCH_START_MINUTES`・`CALENDAR_PRESTART_MINUTES`・`CALENDAR_SETTLE_DEADLINE_MINUTES`・`CALENDAR_STALE_AFTER_MINUTES` |
+| bot `--task=bot-run` | 必須（**運用値未確定: 既定なし**。案: lease 300 / heartbeat 60、poll 300/60/30、odds age 180）| `BOT_RUN_LEASE_SECONDS`・`BOT_RUN_HEARTBEAT_SECONDS`・`BOT_RUN_POLL_FAR/MID/NEAR_SECONDS`・`BOT_RUN_MAX_ODDS_AGE_SECONDS`・`BOT_RUN_MAX_RUNTIME_MINUTES`（≤840）・`BOT_RUN_STALE_CLAIM_SECONDS`・`BOT_RUN_MAX_CYCLE_FAILURES`・`BOT_RUN_SNAPSHOT_MINUTES`・`BOT_RUN_TIGHTEN_NEAR`・`BOT_RUN_SNAPSHOT_HISTORY_LIMIT`・`BOT_RUN_ML_MODEL_TYPE`（`off` で開始）・`BOT_RUN_DECISION_PROFILE=legacy_function_defaults` + CALENDAR_* と共通 |
+| bot `--task=bot-run` | 任意 | `BOT_RUN_PRIORITY_MODE`・`BOT_RUN_HIT_RATE_MIN_EV`・`BOT_RUN_HIT_RATE_MIN_EV_SCHEDULE`、`DISCORD_WEBHOOK_URL`/`DISCORD_ERROR_WEBHOOK_URL`（Secret。形式 `https://discord.com/api/webhooks/<数字>/<トークン>` のみ）、`DISCORD_MENTION_USER_ID`（17〜20 桁）、ML 有効時 `MODEL_VERIFY_PUBKEY`（Ed25519 公開鍵の Base64。複数可）|
+| ml-train | 必須 | `MODEL_STORE_URI`、`MODEL_SIGNING_KEY`（Secret `model-signing-key`）。引数 `--tenant-id --dataset-id` |
+| 渡さない | — | `REQUIRED_SCHEMA_VERSION`・`RELEASE_ID`（イメージに焼き込み）|
+**運用値（CALENDAR_*/BOT_RUN_*）の確定は T1.20/T1.21（本人の実環境確認）が前提**。確定まで Terraform 変数は**必須入力（既定なし）**にし、未入力の plan は失敗させる。
+
+### 5.3 スキーマ版・GRANT・Job の実行契約
+| 項目 | 内容（web が正本） | infra |
+|---|---|---|
+| スキーマ版 | 現在 **5**（V5〈承認済み・本番未適用〉: `race_evaluations` の UNIQUE、`race_timing_notice`）。アプリの `requiredSchemaVersion` は 5。DB が 5 未満だと各アプリは起動/ready 失敗（exit 1） | **deploy は migrate（`migrate` ユーザー）を先に実行してからアプリを更新**。V5 の本番適用は**ユーザー承認後**。ロールバックはアプリのみ（スキーマは戻さない）|
+| GRANT | `R__grants.sql`（migrate 実行ごとに再適用）。bot は `race_timing_notice` に SELECT/INSERT のみ、app は SELECT のみ。`results`/`payouts` は ingest が SELECT/INSERT/UPDATE、bot は SELECT | Terraform は GRANT しない。deploy 後の smoke（status）で `db-migration --mode=validate` が 0 であることを確認 |
+| 終了コード | 0 正常/対象なし・確定した非 NORMAL、**75 一時失敗（DB/GCS 不達・UNKNOWN。Jobs は再試行しない）**、2 引数/設定誤り、1 その他失敗 | Job は `max-retries=0`。Scheduler は再試行しない。1/2/75 は通知 |
+| タイムアウト | bot-run 14 時間（≤`BOT_RUN_MAX_RUNTIME_MINUTES` 840 分。G-OPS-5 で上限確認）、他は 1 時間以内 | Job ごとに設定 |
+| 通知の配送 | **自動再送しない（at-most-once）**。`SEND_UNKNOWN` は管理画面で確認 | infra は Webhook の Secret のみ。再送の自動化をしない |
+| Discord Webhook | 形式制限（`discord.com` のみ）。本番では Secret Manager | `discord-webhook`・`discord-error-webhook` |
+
+### 5.4 infra に関わる未解決（実機/本人判断。第5段階の前提）
+G-OPS-1〜9（実 GCP）、G-DB-1/5/6/7、G-COST-1、F-7/F-8（JDK 25・MySQL 8.4/9.7・SIGTERM）、本番 release-manifest と署名鍵運用、V5 の本番適用の承認、P-1（`agent-kek`）の承認、運用値（CALENDAR_*/BOT_RUN_*）の確定、COMP-4（実データのクラウド投入）。**これらを満たす前に apply・課金リソース作成をしない**（CLAUDE.md の絶対ルール）。

@@ -1,4 +1,12 @@
 # PROGRESS（jra-bot-infra）
+最終更新: 2026-11-01（T5.0: web CONTRACTS 0.4.15 への文書同期）
+
+## 2026-11-01 T5.0 完了（文書のみ。ブランチ claude/jra-bot-replace-continue-l1lk71）
+- `CONTRACTS.md` §5（同期表: I-H1〜I-H9、環境変数、スキーマ版 5・GRANT・終了コード）、`ARCHITECTURE.md`（Jobs・DB ユーザー・プール 24）、`OPERATIONS_DESIGN.md`（UNKNOWN=75、validate=10、ビーコンの `kid`・`phase` 廃止、cancel 猶予 10 秒）を更新。DECISIONS I-023、PLAN T5.0 完了。
+- Terraform・ワークフロー・課金リソースの変更なし（`terraform` 未実行）。第5段階の実装（T5.1〜T5.6）は未着手。
+- **次**: T5.1（Terraform 基盤のコード。`plan` まで。apply はユーザー承認後）。実 GCP の検証ゲートと、運用値・V5 本番適用・P-1 の承認が前提の項目は CONTRACTS §5.4。
+
+## （以前の記録）
 最終更新: 2026-10-22（Stage 1-D①: T1.7・T1.8・T1.18 完了）
 
 ## 現在の段階

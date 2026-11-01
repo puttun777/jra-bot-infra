@@ -20,6 +20,8 @@
 | 第5段階 | G-OPS-1〜9 | OPERATIONS_DESIGN §12（ingress 停止、停止/起動時間と課金、停止中メンテナンス、Job cancel、Jobs 最大時間、CAS、IAP プログラム通過、組織なし IAP、apply 前ガード） |
 | 第5段階 | G-NET-1 | Direct VPC egress + プライベートサービスアクセスの課金・疎通、インターネット宛のみ外部へ出ること |
 
+- [x] **T5.0 infra 文書を web CONTRACTS 0.4.15 に同期**（2026-11-01。CONTRACTS.md §5、I-023）
+
 ## 第5段階（実装）
 - [ ] T5.1 Terraform 基盤（tfstate バケット、WIF、AR、Secret、VPC、バケット 4 種）
 - [ ] T5.2 Cloud SQL / Cloud Run（dashboard・ingest）/ Jobs / Scheduler / IAP（作成時は停止側の初期値: I-017）
