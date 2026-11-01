@@ -1,0 +1,63 @@
+name: terraform-apply
+# 適用。GitHub Environment `terraform` の手動承認の後に、plan → ガード → apply を同じジョブで行う（承認後に変わった plan を適用しない）。**本人の承認なしに実行しない**（課金リソースを作る）。
+on:
+  workflow_dispatch:
+    inputs:
+      allow_destroy:
+        description: 保護対象の削除/置換を許す（通常は使わない）
+        type: boolean
+        default: false
+      confirm:
+        description: 'apply と入力すると実行する'
+        required: true
+permissions:
+  contents: read
+  id-token: write
+concurrency:
+  group: ops-prod
+  cancel-in-progress: false
+defaults:
+  run:
+    shell: bash # -eo pipefail（パイプの途中の失敗を成功にしない）
+jobs:
+  apply:
+    if: github.ref == 'refs/heads/main' && inputs.confirm == 'apply'
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    environment: terraform
+    env:
+      TF_VAR_project_id: ${{ vars.GCP_PROJECT_ID }}
+      TF_VAR_project_number: ${{ vars.GCP_PROJECT_NUMBER }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405 # v6.2.0
+        with:
+          python-version: "3.13"
+      - run: pip install -r ops/requirements.txt
+      - uses: ./.github/actions/setup-terraform
+      - uses: ./.github/actions/gcp-auth
+        with:
+          workload_identity_provider: ${{ vars.GCP_WIF_PROVIDER }}
+          service_account: ${{ vars.GCP_SA_TF }}
+          project_id: ${{ vars.GCP_PROJECT_ID }}
+      - name: モードの確認（ops-state）
+        id: mode
+        working-directory: ops
+        run: echo "mode=$(python -m jrabot_ops.cli mode --project "$TF_VAR_project_id")" >> "$GITHUB_OUTPUT"
+      - name: init / plan
+        working-directory: terraform
+        run: |
+          terraform init -input=false -lockfile=readonly -backend-config="bucket=${TF_VAR_project_id}-tfstate"
+          terraform plan -input=false -lock-timeout=5m -out="$RUNNER_TEMP/tfplan"
+          terraform show -json "$RUNNER_TEMP/tfplan" > "$RUNNER_TEMP/tfplan.json"
+      - name: apply 前ガード（モード制御属性・保護資源の削除・認証の緩和・停止中の DB 変更）
+        working-directory: ops
+        run: |
+          args=(plan-guard --plan-json "$RUNNER_TEMP/tfplan.json" --mode "${{ steps.mode.outputs.mode }}")
+          [ "${{ inputs.allow_destroy }}" = true ] && args+=(--allow-destroy)
+          python -m jrabot_ops.cli "${args[@]}"
+      - name: apply（保存した plan そのものだけを適用する）
+        working-directory: terraform
+        run: terraform apply -input=false -lock-timeout=5m "$RUNNER_TEMP/tfplan"
+      - name: 次の確認
+        run: echo "apply 後は ops-status を実行して、mode と実状態（DB・ingress・Scheduler）に不整合がないことを確認する。" >> "$GITHUB_STEP_SUMMARY"

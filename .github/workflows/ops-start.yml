@@ -1,0 +1,68 @@
+name: ops-start
+# 起動（DB 起動 → 検証 → 受付再開 → Scheduler 再開 → mode=NORMAL）。設計: docs/OPERATIONS_DESIGN.md §5。本人が手動で実行する。
+on:
+  workflow_dispatch:
+    inputs:
+      reason:
+        description: 理由（必須）
+        required: true
+      apply_pending_migrations:
+        description: 未適用のマイグレーションがあれば適用する
+        type: boolean
+        default: false
+      force:
+        description: 遷移規則を曲げて実行する（理由必須。通常は使わない）
+        type: boolean
+        default: false
+      dry_run:
+        description: 検査とリース取得だけ（資源は変更しない）
+        type: boolean
+        default: false
+permissions:
+  contents: read
+  id-token: write
+concurrency:
+  group: ops-prod
+  cancel-in-progress: false
+defaults:
+  run:
+    shell: bash # -eo pipefail（パイプの途中の失敗を成功にしない）
+jobs:
+  start:
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    environment: ops
+    env:
+      PROJECT_ID: ${{ vars.GCP_PROJECT_ID }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405 # v6.2.0
+        with:
+          python-version: "3.13"
+      - run: pip install -r ops/requirements.txt
+      - uses: ./.github/actions/gcp-auth
+        with:
+          workload_identity_provider: ${{ vars.GCP_WIF_PROVIDER }}
+          service_account: ${{ vars.GCP_SA_OPS }}
+          project_id: ${{ vars.GCP_PROJECT_ID }}
+      - name: start
+        id: run
+        working-directory: ops
+        env:
+          REASON: ${{ inputs.reason }}
+        run: |
+          args=(start --project "$PROJECT_ID" --actor "$GITHUB_ACTOR" --run-id "$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT" --run-url "$GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID" --reason "$REASON")
+          [ "${{ inputs.apply_pending_migrations }}" = true ] && args+=(--apply-pending-migrations)
+          [ "${{ inputs.force }}" = true ] && args+=(--force)
+          [ "${{ inputs.dry_run }}" = true ] && args+=(--dry-run)
+          python -m jrabot_ops.cli "${args[@]}" | tee -a "$GITHUB_STEP_SUMMARY"
+      - name: 実状態の確認（status と同じ計測）
+        if: always() && inputs.dry_run != true
+        working-directory: ops
+        run: python -m jrabot_ops.cli status --project "$PROJECT_ID" | tee -a "$GITHUB_STEP_SUMMARY"
+      - name: 失敗を Discord に通知
+        if: failure()
+        uses: ./.github/actions/notify-discord
+        with:
+          title: "ops-start 失敗（STARTING のまま。同じ workflow を再実行すると続きから）"

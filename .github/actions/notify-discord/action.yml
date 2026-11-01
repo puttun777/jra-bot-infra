@@ -1,0 +1,17 @@
+name: notify-discord
+description: エラー用 Discord Webhook（Secret Manager）に失敗を通知する。Webhook はログに出さない。通知の失敗は警告に留める
+inputs:
+  title:
+    required: true
+runs:
+  using: composite
+  steps:
+    - shell: bash
+      env:
+        TITLE: ${{ inputs.title }}
+        RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+      run: |
+        url="$(gcloud secrets versions access latest --secret=discord-error-webhook 2>/dev/null)" || { echo "::warning::Webhook を取得できない（通知なし）"; exit 0; }
+        echo "::add-mask::${url}"
+        body="$(python3 -c 'import json,sys;print(json.dumps({"content":"jra-bot "+sys.argv[1]+"\n"+sys.argv[2]}))' "$TITLE" "$RUN_URL")"
+        curl -fsS -H 'Content-Type: application/json' -d "$body" "$url" >/dev/null || echo "::warning::通知に失敗"

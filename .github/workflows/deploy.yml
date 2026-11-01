@@ -1,0 +1,62 @@
+name: deploy
+# イメージ更新。入力は web の release-manifest.json だけ（CONTRACTS §10）。migration → アプリの順。mode=NORMAL 以外は既定で拒否。
+on:
+  workflow_dispatch:
+    inputs:
+      manifest_url:
+        description: release-manifest.json の URL（web のリリース資産。https のみ）
+        required: true
+      manifest_sha256:
+        description: manifest の SHA-256（改ざん検出。web のリリースに記載）
+        required: true
+      allow_when_stopped:
+        description: STOPPED でもイメージ参照だけ更新する（migration なし）
+        type: boolean
+        default: false
+      no_migrations:
+        description: 未適用のマイグレーションがあれば失敗させる（適用しない）
+        type: boolean
+        default: false
+permissions:
+  contents: read
+  id-token: write
+concurrency:
+  group: ops-prod
+  cancel-in-progress: false
+defaults:
+  run:
+    shell: bash # -eo pipefail（パイプの途中の失敗を成功にしない）
+jobs:
+  deploy:
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    environment: deploy
+    env:
+      PROJECT_ID: ${{ vars.GCP_PROJECT_ID }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405 # v6.2.0
+        with:
+          python-version: "3.13"
+      - run: pip install -r ops/requirements.txt
+      - name: manifest の取得とハッシュ確認
+        env:
+          URL: ${{ inputs.manifest_url }}
+          SHA: ${{ inputs.manifest_sha256 }}
+        run: |
+          case "$URL" in https://*) ;; *) echo "::error::https の URL のみ"; exit 2;; esac
+          curl -fsSL --max-time 60 -o "$RUNNER_TEMP/release-manifest.json" "$URL"
+          echo "${SHA}  $RUNNER_TEMP/release-manifest.json" | sha256sum -c -
+      - uses: ./.github/actions/gcp-auth
+        with:
+          workload_identity_provider: ${{ vars.GCP_WIF_PROVIDER }}
+          service_account: ${{ vars.GCP_SA_DEPLOY }}
+          project_id: ${{ vars.GCP_PROJECT_ID }}
+      - name: deploy（スキーマ検証 → migrate → Job → ingest → dashboard → ヘルスチェック → ingress/IAP 不変の確認）
+        working-directory: ops
+        run: |
+          args=(deploy --project "$PROJECT_ID" --manifest "$RUNNER_TEMP/release-manifest.json" --schema ../schemas/release-manifest.v2.json)
+          [ "${{ inputs.allow_when_stopped }}" = true ] && args+=(--allow-when-stopped)
+          [ "${{ inputs.no_migrations }}" = true ] && args+=(--no-migrations)
+          python -m jrabot_ops.cli "${args[@]}" | tee -a "$GITHUB_STEP_SUMMARY"

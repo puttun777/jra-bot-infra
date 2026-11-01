@@ -1,0 +1,65 @@
+name: terraform-plan
+# plan のみ（課金リソースを作らない）。結果を apply が使う plan ファイルとして保存し、ガード（plan_guard）を通す。
+on:
+  workflow_dispatch:
+    inputs:
+      allow_destroy:
+        description: 保護対象の削除/置換を許す（通常は使わない）
+        type: boolean
+        default: false
+permissions:
+  contents: read
+  id-token: write
+concurrency:
+  group: ops-prod
+  cancel-in-progress: false
+defaults:
+  run:
+    shell: bash # -eo pipefail（パイプの途中の失敗を成功にしない）
+jobs:
+  plan:
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    environment: terraform
+    env:
+      TF_VAR_project_id: ${{ vars.GCP_PROJECT_ID }}
+      TF_VAR_project_number: ${{ vars.GCP_PROJECT_NUMBER }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405 # v6.2.0
+        with:
+          python-version: "3.13"
+      - run: pip install -r ops/requirements.txt
+      - uses: ./.github/actions/setup-terraform
+      - uses: ./.github/actions/gcp-auth
+        with:
+          workload_identity_provider: ${{ vars.GCP_WIF_PROVIDER }}
+          service_account: ${{ vars.GCP_SA_TF }}
+          project_id: ${{ vars.GCP_PROJECT_ID }}
+      - name: モードの確認（ops-state）
+        id: mode
+        working-directory: ops
+        run: echo "mode=$(python -m jrabot_ops.cli mode --project "$TF_VAR_project_id")" >> "$GITHUB_OUTPUT"
+      - name: init / plan
+        working-directory: terraform
+        run: |
+          terraform init -input=false -lockfile=readonly -backend-config="bucket=${TF_VAR_project_id}-tfstate"
+          terraform plan -input=false -lock-timeout=5m -out="$RUNNER_TEMP/tfplan"
+          terraform show -json "$RUNNER_TEMP/tfplan" > "$RUNNER_TEMP/tfplan.json"
+      - name: apply 前ガード（モード制御属性・保護資源の削除・認証の緩和・停止中の DB 変更）
+        working-directory: ops
+        run: |
+          args=(plan-guard --plan-json "$RUNNER_TEMP/tfplan.json" --mode "${{ steps.mode.outputs.mode }}")
+          [ "${{ inputs.allow_destroy }}" = true ] && args+=(--allow-destroy)
+          python -m jrabot_ops.cli "${args[@]}"
+      - name: plan の要約
+        run: |
+          cd terraform
+          terraform show -no-color "$RUNNER_TEMP/tfplan" > "$RUNNER_TEMP/tfplan.txt" # パイプにしない（head の早期終了で pipefail が失敗しないように）
+          head -c 60000 "$RUNNER_TEMP/tfplan.txt" >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: tfplan
+          path: ${{ runner.temp }}/tfplan
+          retention-days: 3

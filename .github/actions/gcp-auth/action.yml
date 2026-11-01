@@ -1,0 +1,33 @@
+name: gcp-auth
+description: GitHub OIDC → Workload Identity Federation で GCP に認証する（長期キーなし。呼び出し側ジョブに permissions.id-token=write が必要）
+inputs:
+  workload_identity_provider:
+    description: projects/<number>/locations/global/workloadIdentityPools/<pool>/providers/<provider>
+    required: true
+  service_account:
+    description: 借用するサービスアカウントのメール
+    required: true
+  project_id:
+    required: true
+runs:
+  using: composite
+  steps:
+    - shell: bash
+      env:
+        WIP: ${{ inputs.workload_identity_provider }}
+        SA: ${{ inputs.service_account }}
+        PROJECT: ${{ inputs.project_id }}
+      run: |
+        set -euo pipefail
+        cred="${RUNNER_TEMP}/gcp-cred.json"
+        gcloud iam workload-identity-pools create-cred-config "${WIP}" \
+          --service-account="${SA}" \
+          --credential-source-url="${ACTIONS_ID_TOKEN_REQUEST_URL}&audience=//iam.googleapis.com/${WIP}" \
+          --credential-source-headers="Authorization=Bearer ${ACTIONS_ID_TOKEN_REQUEST_TOKEN}" \
+          --credential-source-type=json --credential-source-field-name=value \
+          --output-file="${cred}"
+        chmod 600 "${cred}"
+        gcloud auth login --cred-file="${cred}" --quiet
+        gcloud config set project "${PROJECT}" --quiet
+        echo "GOOGLE_APPLICATION_CREDENTIALS=${cred}" >> "$GITHUB_ENV"
+        echo "CLOUDSDK_CORE_PROJECT=${PROJECT}" >> "$GITHUB_ENV"
