@@ -42,5 +42,13 @@ describe("cli", () => {
     assert.equal(await quiet(["plan-guard", "--plan-json", planFile([]), "--mode", "WHATEVER"]), 2);
     assert.equal(await quiet(["start", "--unknown-flag"]), 2);
     assert.equal(await quiet(["nonsense"]), 2);
+    // deploy は dry-run・force を受け付けない（黙って無視して本番を更新しない）
+    for (const flag of ["--dry-run", "--force"]) {
+      assert.equal(
+        await quiet(["deploy", "--project", "p", "--actor", "a", "--run-id", "r", "--manifest", "m.json", "--schema", "s.json", flag]),
+        2,
+        flag,
+      );
+    }
   });
 });

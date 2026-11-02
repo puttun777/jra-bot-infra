@@ -69,8 +69,9 @@ async function secret(project: string, name: string, signal: AbortSignal): Promi
   return out;
 }
 
-function stores(project: string, signal: AbortSignal) {
-  const gcs = new GcsClient(fetch, gcloudToken(spawnRunner), signal);
+/** ops-state とビーコンの保管。GCS には中断の signal を渡さない（中断の後も解放・記録を書けるように。タイムアウトはリクエストごと） */
+function stores(project: string) {
+  const gcs = new GcsClient(fetch, gcloudToken(spawnRunner));
   return { state: new GcsStateStore(gcs, `${project}-ops-state`), beacon: new GcsBeaconStore(gcs, `${project}-mode-beacon`) };
 }
 
@@ -92,7 +93,7 @@ export async function main(argv: readonly string[], signal: AbortSignal = new Ab
     }
     if (cmd === "mode") {
       const { values: a } = parseArgs({ args: [...rest], strict: true, options: { project: { type: "string" } } });
-      const { raw } = await stores(need(a.project, "--project"), signal).state.read();
+      const { raw } = await stores(need(a.project, "--project")).state.read();
       let mode = "UNKNOWN";
       if (raw !== undefined) {
         try {
@@ -107,7 +108,7 @@ export async function main(argv: readonly string[], signal: AbortSignal = new Ab
     if (cmd === "status") {
       const { values: a } = parseArgs({ args: [...rest], strict: true, options: { project: { type: "string" }, region: COMMON.region } });
       const project = need(a.project, "--project");
-      const { raw } = await stores(project, signal).state.read();
+      const { raw } = await stores(project).state.read();
       const rows = await collect(
         raw === undefined ? undefined : S.validate(raw),
         new GcloudAdapter(project, a.region, spawnRunner, undefined, undefined, signal),
@@ -120,7 +121,14 @@ export async function main(argv: readonly string[], signal: AbortSignal = new Ab
         args: [...rest],
         strict: true,
         options: {
-          ...COMMON,
+          // deploy には dry-run・force が無い（受け付けて黙って無視すると、dry-run のつもりで本番を更新してしまう）
+          project: COMMON.project,
+          region: COMMON.region,
+          kid: COMMON.kid,
+          actor: COMMON.actor,
+          "run-id": COMMON["run-id"],
+          "run-url": COMMON["run-url"],
+          reason: COMMON.reason,
           manifest: { type: "string" },
           schema: { type: "string" },
           "allow-when-stopped": { type: "boolean", default: false },
@@ -132,7 +140,7 @@ export async function main(argv: readonly string[], signal: AbortSignal = new Ab
       const runId = need(a["run-id"], "--run-id");
       const manifest = loadJson(need(a.manifest, "--manifest"));
       const schema = loadJson(need(a.schema, "--schema"));
-      const st = stores(project, signal);
+      const st = stores(project);
       const gcp = new GcloudAdapter(project, a.region, spawnRunner, undefined, undefined, signal);
       // deploy はビーコンを書かないので署名鍵を読まない（sa-gha-deploy に鍵の権限を与えない）
       const ops = new Ops(
@@ -186,7 +194,7 @@ export async function main(argv: readonly string[], signal: AbortSignal = new Ab
       const project = need(a.project, "--project");
       const actor = need(a.actor, "--actor"); // 引数の検査は外部（gcloud・GCS）に触れる前に終える
       const runId = need(a["run-id"], "--run-id");
-      const st = stores(project, signal);
+      const st = stores(project);
       const gcp = new GcloudAdapter(project, a.region, spawnRunner, undefined, undefined, signal);
       const key = privateKeyFromSecret(await secret(project, "beacon-signing-key", signal));
       const ops = new Ops(st.state, st.beacon, gcp, systemClock, key, a.kid, (t, b) => console.log(`::notice title=${t}::${b}`), signal);

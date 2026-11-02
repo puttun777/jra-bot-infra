@@ -213,10 +213,11 @@ export class Ops {
    * 操作の終了。**先にリースの解放と結果（FAILED/SUCCEEDED）を書く**。実状態の計測は後から別の書込みで行い、失敗しても無視する。
    * 中断されたときは計測しない（キャンセルの猶予〔SIGINT から SIGKILL まで約 10 秒〕に収まらないことがある）。
    */
-  async end(ok: boolean, error: string | null): Promise<void> {
+  async end(ok: boolean, error: string | null, measure = true): Promise<void> {
     let s = S.finish(this.state, ok, this.clock.now(), error);
     s = S.releaseLease(s, this.state.lease?.holder ?? "");
     await this.commit(s, "end");
+    if (!measure) return;
     const measured = structuredClone(this.state);
     if (this.signal.aborted) {
       measured.last_actual = { captured_at: this.clock.now(), error: "中断されたため計測していない" };

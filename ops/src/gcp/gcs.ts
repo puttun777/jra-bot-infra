@@ -61,14 +61,15 @@ export class GcsClient {
   constructor(
     private readonly fetchFn: Fetch,
     private readonly token: () => Promise<string>,
-    private readonly signal?: AbortSignal,
+    /** 1 回のリクエストの上限（ミリ秒）。**中断（SIGINT/SIGTERM）の signal は渡さない**: 中断の後にリースの解放と FAILED の記録を書くため */
+    private readonly timeoutMs = 30_000,
   ) {}
 
   private async req(method: string, url: string, headers: Record<string, string> = {}, body?: Buffer) {
     const h = { Authorization: `Bearer ${await this.token()}`, ...headers };
     const init: { method: string; headers: Record<string, string>; body?: Buffer; signal?: AbortSignal } = { method, headers: h };
     if (body !== undefined) init.body = body;
-    if (this.signal !== undefined) init.signal = this.signal;
+    init.signal = AbortSignal.timeout(this.timeoutMs);
     return this.fetchFn(url, init);
   }
 
@@ -84,7 +85,7 @@ export class GcsClient {
         continue;
       }
       if (r.status === 404) return undefined;
-      if ((r.status === 429 || r.status >= 500) && attempt < 3) continue;
+      if ((r.status === 408 || r.status === 429 || r.status >= 500) && attempt < 3) continue;
       if (r.status !== 200) throw new GcsError(`GCS の読取りが HTTP ${r.status}`);
       return { body: await r.text(), generation: parseGeneration(r.headers.get("x-goog-generation")) };
     }
@@ -116,7 +117,8 @@ export class GcsClient {
       throw new UnknownOutcomeError(`GCS への書込みの結果が不明（通信の失敗）: ${e instanceof Error ? e.message : String(e)}`);
     }
     if (r.status === 412) throw new ConflictError("412 Precondition Failed");
-    if (r.status === 429 || r.status >= 500) throw new UnknownOutcomeError(`GCS への書込みの結果が不明（HTTP ${r.status}）`);
+    if (r.status === 408 || r.status === 429 || r.status >= 500)
+      throw new UnknownOutcomeError(`GCS への書込みの結果が不明（HTTP ${r.status}）`);
     if (r.status !== 200) throw new GcsError(`GCS への書込みが HTTP ${r.status}`);
     const res = parseJson(await r.text(), "GCS の応答");
     if (!isRecord(res)) throw new GcsError("GCS の応答が不正");

@@ -188,6 +188,47 @@ class FakeGcs {
   };
 }
 
+describe("interrupt and GCS (Opus review: high)", () => {
+  it("after SIGTERM the real GCS store can still write the lease release and the FAILED record", async () => {
+    const { Ops } = await import("../src/engine.js");
+    const S = await import("../src/state.js");
+    const { FakeBeacon, FakeClock, FakeGcp } = await import("./fakes.js");
+    const f = new FakeGcs();
+    // 渡された signal を尊重する fetch（実際の fetch と同じく、abort 済みなら即座に失敗する）
+    const honoring: Fetch = async (url, init) => {
+      if (init.signal?.aborted === true) throw new Error("This operation was aborted");
+      return f.fetch(url, init);
+    };
+    const store = new GcsStateStore(new GcsClient(honoring, async () => "T"), "b");
+    const init = S.initialState("2026-11-01T09:00:00Z");
+    await store.write(init, 0n);
+    const ac = new AbortController();
+    const g = new FakeGcp();
+    g.hooks.sqlSetActivation = async () => {
+      ac.abort("SIGTERM");
+      throw new (await import("../src/ports.js")).Interrupted("SIGTERM");
+    };
+    const { generateKeyPairSync } = await import("node:crypto");
+    const ops = new Ops(store, new FakeBeacon(), g, new FakeClock(), generateKeyPairSync("ed25519").privateKey, "k", undefined, ac.signal);
+    await assert.rejects(ops.start({ actor: "a", reason: "r", runId: "run-x" }));
+    const after = S.validate((await store.read()).raw);
+    assert.equal(after.lease, null, "リースを解放した");
+    assert.equal(after.operation?.status, "FAILED", "FAILED を記録した");
+  });
+  it("an interrupted gcloud run job is reported as interrupted, not as a schema failure", async () => {
+    const ac = new AbortController();
+    const r: Runner = async (cmd) => {
+      if (cmd.join(" ").includes("jobs execute")) {
+        ac.abort("SIGTERM");
+        return { code: 127, out: "killed" };
+      }
+      return { code: 0, out: "[]" };
+    };
+    const a = new GcloudAdapter("proj", "asia-northeast1", r, undefined, undefined, ac.signal);
+    await assert.rejects(a.runJob("jra-bot-db-migration", ["--mode=validate"]), /中断/);
+  });
+});
+
 describe("gcs stores", () => {
   const client = (f: FakeGcs) => new GcsClient(f.fetch, async () => "TOKEN");
   it("read, write, CAS and conflict with int64 generations kept exact (bigint)", async () => {
@@ -209,7 +250,7 @@ describe("gcs stores", () => {
     const s = new GcsStateStore(client(f), "b");
     f.throwNext = true;
     await assert.rejects(s.write({ a: 1 }, 0n), UnknownOutcomeError);
-    for (const code of [429, 500, 503]) {
+    for (const code of [408, 429, 500, 503]) {
       f.nextStatus = code;
       await assert.rejects(s.write({ a: 1 }, 0n), UnknownOutcomeError);
     }

@@ -6,7 +6,7 @@
 import { spawn } from "node:child_process";
 import { z } from "zod";
 import { errorMessage, parseJson } from "../json.js";
-import type { Gcp, ServiceState, SqlState } from "../ports.js";
+import { type Gcp, Interrupted, type ServiceState, type SqlState } from "../ports.js";
 
 /** コマンドを実行して (終了コード, 出力) を返す。中断されたら子プロセスを止める。 */
 export type Runner = (cmd: readonly string[], signal?: AbortSignal) => Promise<{ code: number; out: string }>;
@@ -239,6 +239,8 @@ export class GcloudAdapter implements Gcp {
       "--quiet",
     ];
     const { code, out } = await this.run(cmd, this.signal);
+    // 中断で gcloud を止めた（Cloud 上の execution は続く）。終了コードを推測しない
+    if (this.signal?.aborted === true) throw new Interrupted("中断（Job の実行は Cloud Run 上で続いている可能性がある）");
     if (code === 0) return 0;
     const m = /exit\((\d+)\)/.exec(out);
     if (m?.[1] !== undefined) return Number(m[1]);

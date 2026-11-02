@@ -248,3 +248,53 @@ describe("rollback judgement (CONTRACTS §10)", () => {
     assert.ok(!g.calls.some((c) => c.startsWith("job") || c.startsWith("svc-image")));
   });
 });
+
+describe("review fixes (Opus L2 review)", () => {
+  it("rejections write nothing: STOPPED without permission, rollback refusal, missing or broken ops-state, live lease", async () => {
+    const { store } = await rejected(manifest(), "STOPPED", gcp("internal"));
+    assert.equal(store.writes, 0);
+    const r2 = await rejected(manifest({ release: "2026.11.0" }), "NORMAL", gcp(), {}, REL("2026.11.5", "2026.11.3", "5"));
+    assert.equal(r2.store.writes, 0);
+    const empty = new FakeStore();
+    await assert.rejects(
+      deploy(new Ops(empty, new FakeBeacon(), gcp(), new FakeClock(), undefined, "k"), manifest(), SCHEMA, DI),
+      /UNKNOWN/,
+    );
+    assert.equal(empty.state, undefined, "初期化もしない");
+    const leased = new FakeStore(S.acquireLease(stateIn("NORMAL"), "ops-stop-run", "stop", "2026-11-01T10:00:00Z", false));
+    await assert.rejects(
+      deploy(new Ops(leased, new FakeBeacon(), gcp(), new FakeClock(), undefined, "k"), manifest(), SCHEMA, DI),
+      DeployRejected,
+    );
+    assert.equal(leased.writes, 0);
+  });
+  it("a STOPPED forward deploy raises the rollback lower bound so a later start-with-migrate cannot be rolled back below it", async () => {
+    // A を NORMAL で deploy → 停止 → 互換性を壊す B（min_app_release=B）を STOPPED で deploy → A へのロールバックは拒否
+    const g = gcp("internal");
+    const a = REL("2026.11.0", "2026.11.0", "5");
+    const { store } = await run(
+      manifest({ release: "2026.11.4", rollback: { min_app_release: "2026.11.4" }, git_sha: "d".repeat(40) }),
+      "STOPPED",
+      g,
+      { allowWhenStopped: true },
+      a,
+    );
+    const s = S.validate(store.state);
+    assert.equal(s.release?.schema_min_app_release, "2026.11.4", "下限を安全側に上げる");
+    assert.equal(s.release?.schema_flyway_version, "5", "適用済みの版は migrate したときだけ上げる");
+    const st = S.validate(store.state);
+    st.mode = "NORMAL";
+    const back = new FakeStore(st);
+    await assert.rejects(
+      deploy(new Ops(back, new FakeBeacon(), gcp(), new FakeClock(), undefined, "k"), manifest({ release: "2026.11.0" }), SCHEMA, DI),
+      /ロールバック判定/,
+    );
+  });
+  it("deploy does not overwrite last_actual measured by start/stop (the deploy SA cannot read Cloud SQL / Scheduler)", async () => {
+    const st = stateIn("NORMAL");
+    st.last_actual = { captured_at: "2026-11-01T09:00:00Z", db: "RUNNABLE" };
+    const store = new FakeStore(st);
+    await deploy(new Ops(store, new FakeBeacon(), gcp(), new FakeClock(), undefined, "k"), manifest(), SCHEMA, DI);
+    assert.deepEqual(S.validate(store.state).last_actual, { captured_at: "2026-11-01T09:00:00Z", db: "RUNNABLE" });
+  });
+});

@@ -155,22 +155,36 @@ export async function deploy(
 ): Promise<DeployResult> {
   const { problems, manifest: m } = checkManifest(rawManifest, schema, i.project);
   if (problems.length > 0 || m === undefined) throw new DeployRejected(`manifest 不正: ${problems.join(" / ")}`);
-  let kind: S.TransitionKind;
+  // 拒否の判定は**何も書かずに**先に行う（終了コード 3 は『状態を変えていない』。ops-state が無ければ UNKNOWN として拒否し、初期化もしない）
+  const { raw } = await ops.store.read();
+  if (raw === undefined) throw new DeployRejected("ops-state が無い（mode=UNKNOWN）。初期導入の手順で ops-start/stop を先に実行する");
+  let pre: S.OpsState;
   try {
-    kind = await ops.begin("deploy", { actor: i.actor, reason: i.reason, runId: i.runId, runUrl: i.runUrl });
+    pre = S.validate(raw);
+  } catch (e) {
+    throw new DeployRejected(`ops-state が不正（mode=UNKNOWN）: ${errorMessage(e)}`);
+  }
+  if (!S.ALLOWED_FROM.deploy.has(pre.mode)) throw new DeployRejected(`mode=${pre.mode} の間は deploy しない（start/stop の完了後に実行）`);
+  if (pre.mode === "STOPPED" && !i.allowWhenStopped) {
+    throw new DeployRejected(
+      "mode=STOPPED の deploy は既定で拒否（allow_when_stopped=true でイメージ参照の更新だけ。migration は実行しない）",
+    );
+  }
+  const pj = judge(m, pre.release);
+  if (pj.problems.length > 0) throw new DeployRejected(`ロールバック判定: ${pj.problems.join(" / ")}`);
+  const leaseProblem = S.leaseProblem(pre, i.runId, "deploy", ops.clock.now(), false);
+  if (leaseProblem !== undefined) throw new DeployRejected(leaseProblem);
+  try {
+    await ops.begin("deploy", { actor: i.actor, reason: i.reason, runId: i.runId, runUrl: i.runUrl });
   } catch (e) {
     if (e instanceof S.Rejected) throw new DeployRejected(`mode=${ops.state.mode}: ${e.message}（start/stop の完了後に実行）`);
     throw e;
   }
-  void kind;
   const mode = ops.state.mode;
   const done: string[] = [];
   try {
-    if (mode === "STOPPED" && !i.allowWhenStopped) {
-      throw new DeployRejected(
-        "mode=STOPPED の deploy は既定で拒否（allow_when_stopped=true でイメージ参照の更新だけ。migration は実行しない）",
-      );
-    }
+    // begin が読んだ最新の状態で判定し直す（読んでからリースを取るまでの間に他の操作が入った場合）
+    if (mode === "STOPPED" && !i.allowWhenStopped) throw new DeployRejected("mode=STOPPED の deploy は既定で拒否");
     const j = judge(m, ops.state.release);
     if (j.problems.length > 0) throw new DeployRejected(`ロールバック判定: ${j.problems.join(" / ")}`);
     const gcp = ops.gcp;
@@ -249,21 +263,31 @@ export async function deploy(
     // 記録: DB に適用済みのスキーマの情報は、ロールバックでは下げない（前進修正のみ）。STOPPED では migration していないので変えない
     const prev = ops.state.release;
     const migrated = mode === "NORMAL" && j.kind !== "rollback";
+    // db-migration のイメージを新しい版にした（STOPPED の前進 deploy）だけでも、次の ops-start が migrate し得るので、
+    // ロールバックの下限（schema_min_app_release）は**安全側に上げる**。適用済みの版（schema_flyway_version）は実際に migrate したときだけ上げる
+    // （低めに持つ = ロールバック先の要求版の検査が厳しくなる方向）
+    const imageAdvanced = j.kind === "forward" && !migrated;
+    const maxV = (a: string, b: string): string => (compareVersions(a, b) >= 0 ? a : b);
     const s = structuredClone(ops.state);
     s.release = {
       app_release: m.release,
       git_sha: m.git_sha,
-      schema_min_app_release: migrated || prev === null || prev === undefined ? m.rollback.min_app_release : prev.schema_min_app_release,
+      schema_min_app_release:
+        migrated || prev === null || prev === undefined
+          ? m.rollback.min_app_release
+          : imageAdvanced
+            ? maxV(prev.schema_min_app_release, m.rollback.min_app_release)
+            : prev.schema_min_app_release,
       schema_flyway_version: migrated || prev === null || prev === undefined ? m.flyway.latest_version : prev.schema_flyway_version,
       deployed_at: ops.clock.now(),
       run_id: i.runId,
     };
     await ops.commit(s, "release-recorded");
-    await ops.end(true, null);
+    await ops.end(true, null, false); // deploy の SA は Cloud SQL・Scheduler を読めないので、start/stop が記録した last_actual を上書きしない
     return { release: m.release, git_sha: m.git_sha, mode, kind: j.kind, done };
   } catch (e) {
     try {
-      await ops.end(false, e instanceof Error ? e.message : String(e));
+      await ops.end(false, e instanceof Error ? e.message : String(e), false);
     } catch {
       // 記録できなくても元の失敗を伝える
     }
