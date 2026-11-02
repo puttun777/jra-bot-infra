@@ -68,6 +68,12 @@
 | 権限 | OPERATIONS_DESIGN §11、ARCHITECTURE §5 |
 
 
+## 4b. 2026-11-02 同期（web CONTRACTS 0.4.17。言語移行 L3: web D-257）
+| ID | 内容 | infra 側 |
+|---|---|---|
+| I-H10 | release-manifest **schema_version 3**: `runtime` は `{ "jdk": "25" }` だけ（`python` を削除。ml-train を含む 5 つのイメージはすべて JDK 25 の JVM）。他のフィールドの意味は v2 と同じ | `schemas/release-manifest.v3.json`（web の写し。v2 は削除）。deploy は v3 だけを受け付ける（本番で生成した v2 の manifest は無い） |
+| I-H11 | ml-train の実行（引数・環境変数・終了コード・成果物の配置）は不変。`OPS_MODE_SOURCE`・`MODEL_STORE_URI` は `gs://` も直接読める（旧版は `file://` のみ） | Terraform の ml-train Job の定義は変更不要（イメージの ENTRYPOINT が java になる） |
+
 ## 5. T5.0 同期表（web CONTRACTS 0.4.15 → infra。2026-11-01）
 **この表が §1〜§4 より優先する。** infra の実装（第5段階）はこの表を入力にする。web の変更は web のセッション/PR で行い、infra はこの文書を追従させる。
 

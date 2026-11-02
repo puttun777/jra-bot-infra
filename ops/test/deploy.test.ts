@@ -10,7 +10,7 @@ import * as S from "../src/state.js";
 import { FakeBeacon, FakeClock, FakeGcp, FakeStore } from "./fakes.js";
 
 const ROOT = join(import.meta.dirname, "..", "..", "..");
-const SCHEMA: unknown = JSON.parse(readFileSync(join(ROOT, "schemas", "release-manifest.v2.json"), "utf8"));
+const SCHEMA: unknown = JSON.parse(readFileSync(join(ROOT, "schemas", "release-manifest.v3.json"), "utf8"));
 const PRJ = "jra-bot-prod-1";
 const H = "a".repeat(64);
 const { privateKey: KEY } = generateKeyPairSync("ed25519");
@@ -18,7 +18,7 @@ const NAMES = ["dashboard", "ingest", "bot", "db-migration", "ml-train"] as cons
 
 function manifest(over: Record<string, unknown> = {}): Record<string, unknown> {
   return {
-    schema_version: 2,
+    schema_version: 3,
     release: "2026.11.0",
     git_sha: "b".repeat(40),
     built_at: "2026-11-01T00:00:00Z",
@@ -31,7 +31,7 @@ function manifest(over: Record<string, unknown> = {}): Record<string, unknown> {
     model_schema_versions: [1],
     feature_schemas: { calibration: `sha256:${H}`, alpha: `sha256:${H}`, market: `sha256:${H}` },
     feature_schema_hash: `sha256:${H}`,
-    runtime: { jdk: "25", python: "3.13.1" },
+    runtime: { jdk: "25" },
     notes: "test",
     ...over,
   };
@@ -96,6 +96,11 @@ describe("manifest", () => {
     assert.ok(checkManifest(manifest(), SCHEMA, "other-project-9").problems.length > 0);
     assert.ok(checkManifest(manifest({ kind: "preview", deployable: false }), SCHEMA, PRJ).problems.length > 0);
     assert.ok(checkManifest(manifest({ contract_version: "0.5.0" }), SCHEMA, PRJ).problems.length > 0);
+  });
+  it("schema_version 3 only: a v2 manifest (with runtime.python) is rejected (web CONTRACTS 0.4.17, D-257)", () => {
+    const v2 = manifest({ schema_version: 2, runtime: { jdk: "25", python: "3.13.1" } });
+    assert.ok(checkManifest(v2, SCHEMA, PRJ).problems.length > 0);
+    assert.ok(checkManifest(manifest({ runtime: { jdk: "25", python: "3.13.1" } }), SCHEMA, PRJ).problems.length > 0);
   });
   it("min_app_release newer than release is rejected by the contract check (known issue 4)", () => {
     const p = checkManifest(manifest({ rollback: { min_app_release: "2026.12.0" } }), SCHEMA, PRJ).problems;
