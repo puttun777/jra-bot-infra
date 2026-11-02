@@ -325,6 +325,108 @@ describe("review fixes (Opus L2 review)", () => {
     assert.ok(store.history.some((h) => h.includes("rollback-bound-raised")));
     assert.equal(S.validate(store.state).release?.schema_flyway_version, "5");
   });
+  // 再確認 2 回目（I-034）: 下限を元に戻すのは db-migration のイメージが前の版のまま（替えていない・戻せた）ときだけ
+  const FWD = () => manifest({ release: "2026.11.4", rollback: { min_app_release: "2026.11.4" }, git_sha: "d".repeat(40) });
+  const PREV_IMG = `previous@sha256:${"c".repeat(64)}`;
+  it("restored image: the raised bound is restored when validation fails and the previous image is put back", async () => {
+    const g = gcp();
+    g.jobImages["jra-bot-db-migration"] = PREV_IMG;
+    g.jobExit["--mode=validate"] = 1;
+    const { store } = await rejected(FWD(), "NORMAL", g, {}, REL("2026.11.0", "2026.11.0", "5"));
+    const st = S.validate(store.state);
+    assert.equal(g.jobImages["jra-bot-db-migration"], PREV_IMG);
+    assert.equal(st.release?.schema_min_app_release, "2026.11.0", "イメージを戻せたので下限も戻す");
+    assert.ok(store.history.some((h) => h.includes("rollback-bound-restored")));
+    assert.equal(st.lease, null);
+  });
+  it("case 1: a STOPPED forward deploy failing after the db-migration image change keeps the raised bound", async () => {
+    for (const where of ["jobs", "service", "snapshot"] as const) {
+      const g = gcp();
+      g.jobImages["jra-bot-db-migration"] = PREV_IMG;
+      if (where === "jobs")
+        g.hooks.jobSetImage = async (job, image) => {
+          if (job !== "jra-bot-db-migration") throw new Error("Cloud Run API が失敗");
+          g.jobImages[job] = image;
+        };
+      if (where === "service")
+        g.hooks.serviceSetImage = async () => {
+          throw new Error("Cloud Run API が失敗");
+        };
+      if (where === "snapshot")
+        g.hooks.serviceSetImage = async (name, image) => {
+          g.serviceImages[name] = image;
+          g.svc(name).ingress = "internal-and-cloud-load-balancing";
+        };
+      const { store } = await rejected(FWD(), "STOPPED", g, { allowWhenStopped: true }, REL("2026.11.0", "2026.11.0", "5"));
+      const st = S.validate(store.state);
+      assert.notEqual(g.jobImages["jra-bot-db-migration"], PREV_IMG, where);
+      assert.equal(st.release?.schema_min_app_release, "2026.11.4", `${where}: 新しいイメージが残るので下限は上げたまま`);
+      assert.ok(!store.history.some((h) => h.includes("rollback-bound-restored")), where);
+      assert.equal(st.lease, null, where);
+      assert.equal(st.operation?.status, "FAILED", where);
+    }
+  });
+  it("case 2: NORMAL with nothing to migrate, failing in D2 or later, keeps the raised bound", async () => {
+    for (const where of ["jobs", "health"] as const) {
+      const g = gcp();
+      g.jobImages["jra-bot-db-migration"] = PREV_IMG;
+      if (where === "jobs")
+        g.hooks.jobSetImage = async (job, image) => {
+          if (job !== "jra-bot-db-migration") throw new Error("Cloud Run API が失敗");
+          g.jobImages[job] = image;
+        };
+      if (where === "health") g.health["jra-bot-ingest"] = 503;
+      const { store } = await rejected(FWD(), "NORMAL", g, {}, REL("2026.11.0", "2026.11.0", "5"));
+      const st = S.validate(store.state);
+      assert.ok(!g.calls.includes("job:jra-bot-db-migration:--mode=migrate"), where);
+      assert.equal(st.release?.schema_min_app_release, "2026.11.4", where);
+      assert.equal(st.lease, null, where);
+    }
+  });
+  it("case 3: when fail() cannot put the previous image back, the raised bound is kept", async () => {
+    const g = gcp();
+    g.jobImages["jra-bot-db-migration"] = PREV_IMG;
+    g.jobExit["--mode=validate"] = 1;
+    g.hooks.jobSetImage = async (job, image) => {
+      if (image === PREV_IMG) throw new Error("Cloud Run API が失敗");
+      g.jobImages[job] = image;
+    };
+    const { err, store } = await rejected(FWD(), "NORMAL", g, {}, REL("2026.11.0", "2026.11.0", "5"));
+    assert.match(err.message, /戻せなかった/);
+    const st = S.validate(store.state);
+    assert.equal(st.release?.schema_min_app_release, "2026.11.4");
+    assert.equal(st.lease, null);
+  });
+  it("case 3b: a failing image change (possibly applied) keeps the raised bound", async () => {
+    const g = gcp();
+    g.jobImages["jra-bot-db-migration"] = PREV_IMG;
+    g.hooks.jobSetImage = async () => {
+      throw new Error("応答なし");
+    };
+    const { store } = await rejected(FWD(), "NORMAL", g, {}, REL("2026.11.0", "2026.11.0", "5"));
+    assert.equal(S.validate(store.state).release?.schema_min_app_release, "2026.11.4");
+  });
+  it("the lease is released even when restoring the bound fails", async () => {
+    const g = gcp();
+    g.jobImages["jra-bot-db-migration"] = PREV_IMG;
+    g.jobExit["--mode=validate"] = 1;
+    const store = new FakeStore(stateIn("NORMAL", REL("2026.11.0", "2026.11.0", "5")));
+    // 下限を上げた後の、下限を元に戻す書込み（リースを持ったまま 2026.11.0 へ戻す）だけを失敗させる
+    let raised = false;
+    const origWrite = store.write.bind(store);
+    store.write = async (state, gen) => {
+      const st = S.validate(state);
+      const min = st.release?.schema_min_app_release;
+      if (min === "2026.11.4") raised = true;
+      if (raised && min === "2026.11.0" && st.lease !== null) throw new Error("GCS が一時的に失敗");
+      return origWrite(state, gen);
+    };
+    await assert.rejects(deploy(new Ops(store, new FakeBeacon(), g, new FakeClock(), KEY, "k"), FWD(), SCHEMA, DI));
+    const st = S.validate(store.state);
+    assert.equal(st.lease, null, "end は必ず実行する");
+    assert.equal(st.operation?.status, "FAILED");
+    assert.equal(st.release?.schema_min_app_release, "2026.11.4", "戻せなかったので上げたまま（安全側）");
+  });
   it("a malformed recorded release is refused before any image changes", async () => {
     const g = gcp();
     const bad = { ...REL("2026.11.0", "latest", "5") };

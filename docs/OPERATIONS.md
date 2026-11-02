@@ -66,7 +66,7 @@
 | 検証ゲート G-OPS-1〜9 | 未実施（実リソースが必要） |
 | 追加の未確認（独立レビュー由来） | G-OPS-10: `gcloud run jobs execute --wait` 失敗時に db-migration の終了コード 10 を取れるか（取れないと start/deploy は『未適用あり』を『不整合』として止まる = 安全側）。キャンセル時に runner のシグナル（SIGINT → 約 7.5 秒後に SIGTERM → SIGKILL）が `python | tee` の python まで届き、リース解放の commit が間に合うか（G-OPS-11。解放は計測より先に書く設計）、DB が停止中に `terraform plan`/`apply` の refresh が Cloud SQL のユーザー・DB を読めるか（読めない場合は apply の前に ops-start が必要になる）、IAP のサービスエージェント（`service-<番号>@gcp-sa-iap…`）が apply 時点で存在するか、IAP の audience、`ingress=internal` の外部応答コード |
 
-## deploy とロールバックの下限（2026-11-02、I-030・I-032・I-033）
-- 前進の deploy は、db-migration のイメージを替える**前に** `ops-state.release.schema_min_app_release` を `max(記録, manifest の min_app_release)` へ上げて記録する（migrate の途中で中断されても、Cloud Run 上の migrate が続いて DB が進み得るため）。migrate を一度も実行しないまま失敗した場合（validate で止まった・アプリの更新で失敗した）は、元の記録に戻す。
+## deploy とロールバックの下限（2026-11-02、I-030・I-032・I-033・I-034）
+- 前進の deploy は、db-migration のイメージを替える**前に** `ops-state.release.schema_min_app_release` を `max(記録, manifest の min_app_release)` へ上げて記録する（migrate の途中で中断されても、Cloud Run 上の migrate が続いて DB が進み得るため）。失敗時に元の値へ戻すのは、migrate を試みておらず、db-migration のイメージが前の版のまま（替えていない・戻せた）ときだけ（I-034。新しいイメージが残ると、以後の `ops-start --apply-pending-migrations` で DB が進み得る）。migrate を一度も実行しないまま失敗した場合（validate で止まった・アプリの更新で失敗した）は、元の記録に戻す。
 - **誤って互換性を壊すリリースを STOPPED で deploy した場合**（DB は旧スキーマのまま）、下限が上がってロールバックできなくなる（安全側）。戻すには: ① `gcloud storage cat gs://<project>-ops-state/state/ops-state.json` で現在の記録を確認する ② 直前の release の記録は `history/` にある（同じ名前の上書き不可） ③ **本人が**、ops のリースが無いこと（`ops-status`）を確かめたうえで、`release.schema_min_app_release` を直前の値に戻した JSON を `--if-generation-match=<現在の generation>` で書き戻す。Claude は本番の ops-state を書き換えない。
 - 要検証（G-OPS-11）: キャンセル時に node へシグナルが届くか（`node … | tee`）。中断時は履歴の書込みを省き、本体の状態（解放・FAILED）を優先して書く。

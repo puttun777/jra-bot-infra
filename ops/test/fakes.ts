@@ -121,6 +121,7 @@ export class FakeGcp implements Gcp {
     schedulerStates: () => Promise<Record<string, string>>;
     runJob: (job: string, args: readonly string[]) => Promise<number>;
     serviceSetImage: (name: string, image: string) => Promise<void>;
+    jobSetImage: (job: string, image: string) => Promise<void>;
   }> = {};
 
   svc(name: string): FakeService {
@@ -198,6 +199,7 @@ export class FakeGcp implements Gcp {
   }
 
   async jobSetImage(job: string, image: string): Promise<void> {
+    if (this.hooks.jobSetImage !== undefined) return this.hooks.jobSetImage(job, image);
     this.calls.push(`job-image:${job}`);
     this.jobImages[job] = image;
   }

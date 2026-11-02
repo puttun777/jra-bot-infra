@@ -190,9 +190,13 @@ export async function deploy(
   }
   const mode = ops.state.mode;
   const done: string[] = [];
-  // 先に上げたロールバックの下限を、migrate を一度も実行しないまま失敗したときだけ元に戻すための記録
+  // 先に上げたロールバックの下限を元に戻すための記録。戻すのは、migrate を一度も実行せず、かつ db-migration のイメージが
+  // 前の版のまま（一度も替えていない、または fail() で前の版に戻せた）ときだけ。新しいイメージが残る間は、
+  // 以後の ops-start --apply-pending-migrations で DB が進み得るので、下限は上げたままにする（安全側）
   const releaseBefore = structuredClone(ops.state.release ?? null);
   let migrateAttempted = false;
+  let dbImageChanged = false;
+  let dbImageRestored = false;
   try {
     // begin が読んだ最新の状態で判定し直す（読んでからリースを取るまでの間に他の操作が入った場合）
     if (mode === "STOPPED" && !i.allowWhenStopped) throw new DeployRejected("mode=STOPPED の deploy は既定で拒否");
@@ -239,12 +243,15 @@ export async function deploy(
           return "rollback: schema unchanged";
         }
         const previous = await gcp.jobImage(DB_JOB);
+        // 呼び出しが失敗しても反映済みの可能性があるので、呼ぶ前に「替えた」とみなす
+        if (previous !== img["db-migration"]) dbImageChanged = true;
         await gcp.jobSetImage(DB_JOB, img["db-migration"]);
         const fail = async (msg: string): Promise<DeployRejected> => {
           // 検証できなかった db-migration のイメージを残さない（残ると、以後の ops-start が未検証の版で動く）
           if (previous !== undefined && previous !== img["db-migration"]) {
             try {
               await gcp.jobSetImage(DB_JOB, previous);
+              dbImageRestored = true;
               return new DeployRejected(`${msg}（db-migration のイメージは前の版に戻した）`);
             } catch (e) {
               return new DeployRejected(`${msg}（db-migration のイメージを戻せなかった: ${errorMessage(e)}。手動で前の版に戻すこと）`);
@@ -266,6 +273,7 @@ export async function deploy(
       });
       done.push("migration");
     } else if (j.kind !== "rollback") {
+      dbImageChanged = true; // STOPPED では前の版を記録しない（戻さない）ので、以後の失敗では下限を上げたままにする
       await gcp.jobSetImage(DB_JOB, img["db-migration"]); // STOPPED: 参照の更新だけ（migration は次の ops-start / deploy）
     }
     await ops.step("D2_jobs", async () => {
@@ -319,13 +327,17 @@ export async function deploy(
     await ops.end(true, null, false); // deploy の SA は Cloud SQL・Scheduler を読めないので、start/stop が記録した last_actual を上書きしない
     return { release: m.release, git_sha: m.git_sha, mode, kind: j.kind, done };
   } catch (e) {
-    try {
-      if (!migrateAttempted && !(e instanceof Interrupted)) {
-        // DB は進んでいない（validate で止まった・アプリの更新で失敗した）。イメージを前の版に戻したので、記録も元に戻す
+    if (!migrateAttempted && !(e instanceof Interrupted) && (!dbImageChanged || dbImageRestored)) {
+      // DB は進んでおらず、db-migration のイメージも前の版のまま。上げた下限を元に戻す（失敗しても上げたまま = 安全側。リースの解放は下で必ず行う）
+      try {
         const r = structuredClone(ops.state);
         r.release = releaseBefore;
         if (JSON.stringify(r.release) !== JSON.stringify(ops.state.release)) await ops.commit(r, "rollback-bound-restored");
+      } catch (restoreError) {
+        log(`ロールバックの下限を元に戻せなかった（上げたまま。安全側）: ${errorMessage(restoreError)}`);
       }
+    }
+    try {
       await ops.end(false, e instanceof Error ? e.message : String(e), false);
     } catch {
       // 記録できなくても元の失敗を伝える
