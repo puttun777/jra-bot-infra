@@ -5,9 +5,10 @@
 - **ops/src**（TypeScript strict）: `state`（zod）・`engine`（start/stop）・`deploy`（リース・ロールバック判定・release の記録）・`status`・`plan-guard`（Terraform 用の移植）・`beacon`（Ed25519）・`gcp/gcloud`・`gcp/gcs`（JSON API・generation は bigint）・`cli`（終了コード 0/1/2/3 は旧版と同じ。中断も 1）。旧 `ops/jrabot_ops`・`ops/tests`（Python）は削除。
 - **既知の問題の修正**: dry-run が書かない／CAS 応答消失・412 は再読取りで成立確認／min_app_release とロールバック判定（CONTRACTS §10）／キャンセル時のリース解放と FAILED 記録を最優先／deploy もリースを取る。
 - **互換性の証拠**: 削除前の Python 実装でビーコンのベクトル 8 件を生成（`ops/test/vectors/beacon_vectors.json`。生成元コミット e21e9e4）し、TS 版の出力バイト列・正準形・署名が完全一致（2^53 を超える seq は丸めずに拒否）。
+- **独立レビュー（Opus・High、読取り専用）**: 初回 高 1・中 3・低 4（I-032）→ 再確認 中 1・低 4（I-033）→ 再確認 2 回目 中 1・低 1（I-034）→ 3 回目 **高・中なし**（残る低: deploy 以外でイメージを替えない前提を OPERATIONS.md に明記。`jobImage` の参照形式と digest 表記の一致は G-OPS で実機確認）。サブエージェントのレビューであり GitHub 上の第三者 Approve ではない。
 - **workflow**: `.github/actions/setup-ops`（setup-node v7.1.0 = SHA 固定、`npm ci --ignore-scripts`、tsc）。全 workflow の `python -m jrabot_ops.cli` を `node ../build/ops/src/cli.js` に、`python3 -c`（JSON 生成）を `jq -n` に置換。deploy は `--actor/--run-id/--run-url` を渡す（リースのため）。
 - **Terraform（コードのみ）**: `ops_state_deploy_state`・`ops_state_deploy_history`（deploy SA に ops-state の state/ の上書きと history/ の追記だけ。I-031・I-032。apply は本人承認）。
-- **検証（ローカル、Node 24.22.2）**: `npm run lint`・tsc（strict）成功、ops 試験 **109 件成功**（レビュー反映後。I-032）（旧 Python 77 件の全ケース + 既知問題の回帰 + 互換ベクトル）。修正点の変異試験（dry-run・412・再読取り・min_app_release・中断時の計測）で該当試験が失敗することを確認。`terraform fmt -check` 成功。**未実施**: `terraform init/validate/test`（registry.terraform.io がこのセッションから 403。CI で確認）、実 GCP（gcloud の出力形式・GCS の実応答: G-OPS-1〜10）、GitHub 上の workflow 実行。
+- **検証（ローカル、Node 24.22.2）**: `npm run lint`・tsc（strict）成功、ops 試験 **118 件成功**（レビュー 3 回の反映後。I-032〜I-034。検証したコミット d12ceb1）（旧 Python 77 件の全ケース + 既知問題の回帰 + 互換ベクトル）。修正点の変異試験（dry-run・412・再読取り・min_app_release・中断時の計測）で該当試験が失敗することを確認。`terraform fmt -check` 成功。**未実施**: `terraform init/validate/test`（registry.terraform.io がこのセッションから 403。CI で確認）、実 GCP（gcloud の出力形式・GCS の実応答: G-OPS-1〜10）、GitHub 上の workflow 実行。
 
 ## 2026-11-01 第5段階（T5.1〜T5.6）のコード化
 - **terraform/**: 基盤（API・VPC・Cloud SQL〔停止側の初期値〕・バケット 3・Secret〔値なし〕・Artifact Registry・SA・カスタムロール・WIF・Cloud Run service/Jobs・Scheduler〔paused〕・監視/予算）。`ignore_changes` でモード制御属性とイメージを Terraform から外す。
