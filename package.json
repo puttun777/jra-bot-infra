@@ -1,0 +1,23 @@
+{
+  "name": "jra-bot-infra",
+  "private": true,
+  "description": "運用 CLI（ops/）と GCP の資源定義（Pulumi。pulumi/）の TypeScript。jra-bot-web の docs/LANGUAGE_MIGRATION.md",
+  "type": "module",
+  "engines": { "node": ">=24.22.2 <25" },
+  "scripts": {
+    "build": "tsc -p ops/tsconfig.json",
+    "lint": "biome check ops",
+    "format": "biome check --write ops",
+    "test": "npm run --silent build && node ops/run-tests.mjs",
+    "ops": "node build/ops/src/cli.js"
+  },
+  "devDependencies": {
+    "@biomejs/biome": "2.5.15",
+    "@types/node": "24.19.2",
+    "typescript": "6.0.3"
+  },
+  "dependencies": {
+    "ajv": "8.20.0",
+    "zod": "4.6.7"
+  }
+}

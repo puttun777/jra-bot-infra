@@ -1,0 +1,15 @@
+name: setup-ops
+description: >-
+  運用 CLI（ops/。TypeScript）を使えるようにする: Node.js（package.json の engines と一致）、npm ci（lockfile どおり・install スクリプトを実行しない）、
+  tsc（strict）でビルド（build/ops）。CLI は `node build/ops/src/cli.js`（ops/ から実行するときは ../build/ops/src/cli.js）。
+runs:
+  using: composite
+  steps:
+    - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+      with:
+        node-version: "24.22.2"
+    - shell: bash
+      run: |
+        node --version
+        npm ci --ignore-scripts --no-audit --no-fund
+        npm run --silent build

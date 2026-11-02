@@ -27,10 +27,7 @@ jobs:
       TF_VAR_project_number: ${{ vars.GCP_PROJECT_NUMBER }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-      - uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405 # v6.2.0
-        with:
-          python-version: "3.13"
-      - run: pip install -r ops/requirements.txt
+      - uses: ./.github/actions/setup-ops
       - uses: ./.github/actions/setup-terraform
       - uses: ./.github/actions/gcp-auth
         with:
@@ -40,7 +37,7 @@ jobs:
       - name: モードの確認（ops-state）
         id: mode
         working-directory: ops
-        run: echo "mode=$(python -m jrabot_ops.cli mode --project "$TF_VAR_project_id")" >> "$GITHUB_OUTPUT"
+        run: echo "mode=$(node ../build/ops/src/cli.js mode --project "$TF_VAR_project_id")" >> "$GITHUB_OUTPUT"
       - name: init / plan
         working-directory: terraform
         run: |
@@ -52,7 +49,7 @@ jobs:
         run: |
           args=(plan-guard --plan-json "$RUNNER_TEMP/tfplan.json" --mode "${{ steps.mode.outputs.mode }}")
           [ "${{ inputs.allow_destroy }}" = true ] && args+=(--allow-destroy)
-          python -m jrabot_ops.cli "${args[@]}"
+          node ../build/ops/src/cli.js "${args[@]}"
       - name: plan の要約
         run: |
           cd terraform

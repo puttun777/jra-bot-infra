@@ -138,6 +138,33 @@ resource "google_storage_bucket_iam_member" "ops_state_deploy_read" {
   member = "serviceAccount:${google_service_account.sa["gha-deploy"].email}"
 }
 
+# deploy は start/stop と同じリース（state/ops-state.json の CAS）を取り、成功したら release を記録する（ops の TS 移行時の修正。web D-256・infra I-031）。
+# state/ は上書き（作成 + 削除）が要るので objectUser、history/ は追記だけなので objectCreator（監査記録を消せない）。
+# agent/ やバケットの設定・ビーコン・署名鍵には権限を与えない（deploy はビーコンを書かない）
+resource "google_storage_bucket_iam_member" "ops_state_deploy_state" {
+  bucket = google_storage_bucket.ops_state.name
+  role   = "roles/storage.objectUser"
+  member = "serviceAccount:${google_service_account.sa["gha-deploy"].email}"
+
+  condition {
+    title       = "state-prefix-only"
+    description = "state/ 配下だけ（deploy のリースと release の記録）"
+    expression  = "resource.name.startsWith(\"projects/_/buckets/${local.buckets.ops_state}/objects/state/\")"
+  }
+}
+
+resource "google_storage_bucket_iam_member" "ops_state_deploy_history" {
+  bucket = google_storage_bucket.ops_state.name
+  role   = "roles/storage.objectCreator"
+  member = "serviceAccount:${google_service_account.sa["gha-deploy"].email}"
+
+  condition {
+    title       = "history-prefix-only"
+    description = "history/ 配下の追記だけ（削除・上書きはできない）"
+    expression  = "resource.name.startsWith(\"projects/_/buckets/${local.buckets.ops_state}/objects/history/\")"
+  }
+}
+
 resource "google_storage_bucket_iam_member" "ops_state_tf_read" {
   bucket = google_storage_bucket.ops_state.name
   role   = "roles/storage.objectViewer"

@@ -14,7 +14,10 @@ JRA Bot リプレースのインフラ側リポジトリ（Terraform / GitHub Ac
 8. Claude Pro 節約: 単一エージェント、調査結果は docs に保存、ログ全文を出さない。
 
 ## 開発の委任（2026-11-01 更新。正本は jra-bot-web の CLAUDE.md）
-段階ごとの『次へ』の指示は不要。上限で中断するときは『完了』とせず未完了の範囲と再開手順を PROGRESS に記録する。push 前に `terraform fmt -check`・`validate`・mock を使う試験（実行できる範囲）を実行し、GCP 認証が要る `plan` はできなかった理由を記録する（mock の成功を実 GCP の plan 成功と書かない）。web の事前検証 `python3 -m tools.ci.preflight` は infra の契約整合（`tools.ci.consistency`）も見る。
+段階ごとの『次へ』の指示は不要。上限で中断するときは『完了』とせず未完了の範囲と再開手順を PROGRESS に記録する。push 前に `terraform fmt -check`・`validate`・mock を使う試験（実行できる範囲）を実行し、GCP 認証が要る `plan` はできなかった理由を記録する（mock の成功を実 GCP の plan 成功と書かない）。web の事前検証 `npm run preflight`（web）は infra の契約整合（`consistency`）も見る。infra の事前検証: `npm ci --ignore-scripts && npm run lint && npm test`（ops の TypeScript）と `terraform fmt -check`。
+
+## 言語方針（2026-11-02。web D-250）
+運用 CLI は **TypeScript**（`ops/`。strict・外部入力は zod で検査・any/二重キャスト/non-null assertion で検査を回避しない）。GCP の資源定義は **Pulumi + TypeScript** へ移行する（`pulumi/`。CDKTF は不採用。state は GCS の DIY backend。`pulumi up`/`destroy`/import は本人承認後）。移行完了までの間、Terraform（`terraform/`）は現行の定義として残し、二重に apply しない。Python は使わない。正本は web の `docs/LANGUAGE_MIGRATION.md`、infra 側は `docs/PULUMI_MIGRATION.md`。
 
 ## 作業開始時
 `docs/PROGRESS.md` → web の `docs/PLAN.md`（該当タスク）→ 必要時 `docs/ARCHITECTURE.md` `DECISIONS.md` と web の `docs/CONTRACTS.md`。

@@ -1,6 +1,6 @@
 # OPERATIONS（Runbook）
 最終更新: 2026-11-01。対象: 本人 1 名の運用。**ここに書いた手順のうち実 GCP に触れるものは、まだ一度も実行していない**（検証ゲート G-OPS-1〜9 は `OPERATIONS_DESIGN.md` §12）。実行したら結果（成否・件数のみ。秘密は貼らない）を `docs/PROGRESS.md` に記録する。
-設計の正本: `OPERATIONS_DESIGN.md`（モード・手順・ガード）。コードの正本: `ops/`（Python）、`terraform/`、`.github/workflows/`。
+設計の正本: `OPERATIONS_DESIGN.md`（モード・手順・ガード）。コードの正本: `ops/`（TypeScript。`node build/ops/src/cli.js`）、`terraform/`、`.github/workflows/`。
 
 ## 0. 前提となる本人の作業（Claude はできない・しない）
 | # | 作業 | 結果として得るもの |
@@ -31,7 +31,7 @@
 
 ## 3. Secret（値は Git に置かない）
 `gcloud secrets versions add <name> --data-file=-` で標準入力から入れる（履歴に残さない）。名前: `db-app-password` `db-ingest-password` `db-bot-password` `db-migrate-password` `db-mltrain-password` `discord-webhook` `discord-error-webhook` `ingest-token-pepper` `agent-kek` `beacon-signing-key`（Ed25519 の生 32 バイトを Base64）`model-signing-key`。
-- 鍵の生成例（出力をログ・チャットに貼らない）: `python3 -c "import os,base64;print(base64.b64encode(os.urandom(32)).decode())" | gcloud secrets versions add beacon-signing-key --data-file=-`
+- 鍵の生成例（出力をログ・チャットに貼らない）: `openssl rand -base64 32`
 - **鍵の更新**: ① 新しい鍵を新バージョンとして追加 ② 新しい `kid` を決め、ビーコンの公開鍵を取得側（Windows エージェント設定）に**先に**追加 ③ ops-start/ops-stop のどちらかを `force` なしで実行してビーコンを再署名 ④ 古い鍵を取得側から外す。`agent-kek` の更新は web の `docs/CONTRACTS.md`（エージェント資格の再暗号化）に従う（P-1 の承認が先）。
 
 ## 4. 起動・停止・状態（`ops-start` / `ops-stop` / `ops-status`）
@@ -65,3 +65,9 @@
 | workflow | YAML 構文のみ。**GitHub 上での実行は未実施**（Environment・変数・WIF の設定後に実行） |
 | 検証ゲート G-OPS-1〜9 | 未実施（実リソースが必要） |
 | 追加の未確認（独立レビュー由来） | G-OPS-10: `gcloud run jobs execute --wait` 失敗時に db-migration の終了コード 10 を取れるか（取れないと start/deploy は『未適用あり』を『不整合』として止まる = 安全側）。キャンセル時に runner のシグナル（SIGINT → 約 7.5 秒後に SIGTERM → SIGKILL）が `python | tee` の python まで届き、リース解放の commit が間に合うか（G-OPS-11。解放は計測より先に書く設計）、DB が停止中に `terraform plan`/`apply` の refresh が Cloud SQL のユーザー・DB を読めるか（読めない場合は apply の前に ops-start が必要になる）、IAP のサービスエージェント（`service-<番号>@gcp-sa-iap…`）が apply 時点で存在するか、IAP の audience、`ingress=internal` の外部応答コード |
+
+## deploy とロールバックの下限（2026-11-02、I-030・I-032・I-033・I-034）
+- 前進の deploy は、db-migration のイメージを替える**前に** `ops-state.release.schema_min_app_release` を `max(記録, manifest の min_app_release)` へ上げて記録する（migrate の途中で中断されても、Cloud Run 上の migrate が続いて DB が進み得るため）。失敗時に元の値へ戻すのは、migrate を試みておらず、db-migration のイメージが前の版のまま（替えていない・戻せた）ときだけ（I-034。新しいイメージが残ると、以後の `ops-start --apply-pending-migrations` で DB が進み得る）。migrate を一度も実行しないまま失敗した場合（validate で止まった・アプリの更新で失敗した）は、元の記録に戻す。
+- **誤って互換性を壊すリリースを STOPPED で deploy した場合**（DB は旧スキーマのまま）、下限が上がってロールバックできなくなる（安全側）。戻すには: ① `gcloud storage cat gs://<project>-ops-state/state/ops-state.json` で現在の記録を確認する ② 直前の release の記録は `history/` にある（同じ名前の上書き不可） ③ **本人が**、ops のリースが無いこと（`ops-status`）を確かめたうえで、`release.schema_min_app_release` を直前の値に戻した JSON を `--if-generation-match=<現在の generation>` で書き戻す。Claude は本番の ops-state を書き換えない。
+- **db-migration（および各 Job・サービス）のイメージを deploy 以外で替えない**（`gcloud run jobs update --image` など）。下限を元に戻すかどうかは『deploy だけがイメージを替える』前提で判定する（I-034）。やむを得ず手で替えた場合は、上の手順で `ops-state.release` を本人が直す。要検証（G-OPS）: `jobImage` が返すイメージ参照の形と manifest の digest 表記が一致するか（一致しないと毎回『替えた』扱い。安全側）
+- 要検証（G-OPS-11）: キャンセル時に node へシグナルが届くか（`node … | tee`）。中断時は履歴の書込みを省き、本体の状態（解放・FAILED）を優先して書く。

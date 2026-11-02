@@ -36,10 +36,7 @@ jobs:
       PROJECT_ID: ${{ vars.GCP_PROJECT_ID }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-      - uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405 # v6.2.0
-        with:
-          python-version: "3.13"
-      - run: pip install -r ops/requirements.txt
+      - uses: ./.github/actions/setup-ops
       - name: manifest の取得とハッシュ確認
         env:
           URL: ${{ inputs.manifest_url }}
@@ -56,7 +53,7 @@ jobs:
       - name: deploy（スキーマ検証 → migrate → Job → ingest → dashboard → ヘルスチェック → ingress/IAP 不変の確認）
         working-directory: ops
         run: |
-          args=(deploy --project "$PROJECT_ID" --manifest "$RUNNER_TEMP/release-manifest.json" --schema ../schemas/release-manifest.v2.json)
+          args=(deploy --project "$PROJECT_ID" --actor "$GITHUB_ACTOR" --run-id "$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT" --run-url "$GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID" --manifest "$RUNNER_TEMP/release-manifest.json" --schema ../schemas/release-manifest.v2.json)
           [ "${{ inputs.allow_when_stopped }}" = true ] && args+=(--allow-when-stopped)
           [ "${{ inputs.no_migrations }}" = true ] && args+=(--no-migrations)
-          python -m jrabot_ops.cli "${args[@]}" | tee -a "$GITHUB_STEP_SUMMARY"
+          node ../build/ops/src/cli.js "${args[@]}" | tee -a "$GITHUB_STEP_SUMMARY"

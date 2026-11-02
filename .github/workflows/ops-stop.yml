@@ -40,10 +40,7 @@ jobs:
       PROJECT_ID: ${{ vars.GCP_PROJECT_ID }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-      - uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405 # v6.2.0
-        with:
-          python-version: "3.13"
-      - run: pip install -r ops/requirements.txt
+      - uses: ./.github/actions/setup-ops
       - uses: ./.github/actions/gcp-auth
         with:
           workload_identity_provider: ${{ vars.GCP_WIF_PROVIDER }}
@@ -61,11 +58,11 @@ jobs:
           [ "${{ inputs.take_backup }}" = true ] && args+=(--take-backup)
           [ "${{ inputs.force }}" = true ] && args+=(--force)
           [ "${{ inputs.dry_run }}" = true ] && args+=(--dry-run)
-          python -m jrabot_ops.cli "${args[@]}" | tee -a "$GITHUB_STEP_SUMMARY"
+          node ../build/ops/src/cli.js "${args[@]}" | tee -a "$GITHUB_STEP_SUMMARY"
       - name: 実状態の確認（status と同じ計測）
         if: always() && inputs.dry_run != true
         working-directory: ops
-        run: python -m jrabot_ops.cli status --project "$PROJECT_ID" | tee -a "$GITHUB_STEP_SUMMARY"
+        run: node ../build/ops/src/cli.js status --project "$PROJECT_ID" | tee -a "$GITHUB_STEP_SUMMARY"
       - name: 失敗を Discord に通知
         if: failure()
         uses: ./.github/actions/notify-discord

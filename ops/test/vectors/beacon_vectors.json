@@ -1,0 +1,95 @@
+{
+ "description": "モードビーコン（web CONTRACTS §7.2）の互換ベクトル。削除前の Python 実装（ops/jrabot_ops/beacon.py）で生成した。鍵は合成（本番鍵ではない）。seq は大きな整数も含むため文字列で保持",
+ "generated_by": "ops/jrabot_ops/beacon.py (Python, cryptography 50.0.2)",
+ "generated_at_commit": "e21e9e4ce66b5e034f3c6c71d5b462958a3c9f00",
+ "cases": [
+  {
+   "secret_b64": "AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8=",
+   "public_key_b64": "A6EHv/POEL4dcN0Y50vAmWfk1jCbpQ1fHdyGZBJVMbg=",
+   "kid": "beacon-1",
+   "mode": "NORMAL",
+   "seq": "1",
+   "updated_at": "2026-11-01T10:00:00Z",
+   "valid_until": null,
+   "canonical_utf8": "{\"kid\":\"beacon-1\",\"mode\":\"NORMAL\",\"schema_version\":1,\"seq\":1,\"updatedAt\":\"2026-11-01T10:00:00Z\",\"validUntil\":null}",
+   "beacon_utf8": "{\"schema_version\":1,\"mode\":\"NORMAL\",\"seq\":1,\"updatedAt\":\"2026-11-01T10:00:00Z\",\"validUntil\":null,\"kid\":\"beacon-1\",\"sig\":\"KAbrGEdnIl5zjCjPprx6yjqUn8nY8_l6gvlKcgro7q8R0Orl_o2rmEtzivf0eWlveorKWdruaJJm8bzrsPJ-Dw\"}"
+  },
+  {
+   "secret_b64": "AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8=",
+   "public_key_b64": "A6EHv/POEL4dcN0Y50vAmWfk1jCbpQ1fHdyGZBJVMbg=",
+   "kid": "beacon-1",
+   "mode": "STOPPED",
+   "seq": "42",
+   "updated_at": "2026-11-02T23:59:59Z",
+   "valid_until": null,
+   "canonical_utf8": "{\"kid\":\"beacon-1\",\"mode\":\"STOPPED\",\"schema_version\":1,\"seq\":42,\"updatedAt\":\"2026-11-02T23:59:59Z\",\"validUntil\":null}",
+   "beacon_utf8": "{\"schema_version\":1,\"mode\":\"STOPPED\",\"seq\":42,\"updatedAt\":\"2026-11-02T23:59:59Z\",\"validUntil\":null,\"kid\":\"beacon-1\",\"sig\":\"cNLSz4XwDS4vuOMGVCh3D13AkIQjinwkzJYGgWgDCH6urvVc-L6svyrVC90eAw9_PH3fk4HchYauQqFxS9ceAg\"}"
+  },
+  {
+   "secret_b64": "AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8=",
+   "public_key_b64": "A6EHv/POEL4dcN0Y50vAmWfk1jCbpQ1fHdyGZBJVMbg=",
+   "kid": "beacon-2",
+   "mode": "STARTING",
+   "seq": "7",
+   "updated_at": "2026-11-01T00:00:00Z",
+   "valid_until": "2026-11-01T01:00:00Z",
+   "canonical_utf8": "{\"kid\":\"beacon-2\",\"mode\":\"STARTING\",\"schema_version\":1,\"seq\":7,\"updatedAt\":\"2026-11-01T00:00:00Z\",\"validUntil\":\"2026-11-01T01:00:00Z\"}",
+   "beacon_utf8": "{\"schema_version\":1,\"mode\":\"STARTING\",\"seq\":7,\"updatedAt\":\"2026-11-01T00:00:00Z\",\"validUntil\":\"2026-11-01T01:00:00Z\",\"kid\":\"beacon-2\",\"sig\":\"SbughDZPnjIr8MdRZEq7pb7H_B_rJecsDW4wRNaqDcqtVUodO2f46nN8LWRnraHzV01WxsnUUGFwdFxYBn0uAQ\"}"
+  },
+  {
+   "secret_b64": "AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8=",
+   "public_key_b64": "A6EHv/POEL4dcN0Y50vAmWfk1jCbpQ1fHdyGZBJVMbg=",
+   "kid": "kid-日本",
+   "mode": "STOPPING",
+   "seq": "9007199254740993",
+   "updated_at": "2026-12-31T15:00:00Z",
+   "valid_until": null,
+   "canonical_utf8": "{\"kid\":\"kid-日本\",\"mode\":\"STOPPING\",\"schema_version\":1,\"seq\":9007199254740993,\"updatedAt\":\"2026-12-31T15:00:00Z\",\"validUntil\":null}",
+   "beacon_utf8": "{\"schema_version\":1,\"mode\":\"STOPPING\",\"seq\":9007199254740993,\"updatedAt\":\"2026-12-31T15:00:00Z\",\"validUntil\":null,\"kid\":\"kid-日本\",\"sig\":\"GPMa-L1xEGBrKhpZt_wUdZUCZ0uX-yTHAcMa_O0MOJ-GvVqnffxhKRLgaHGQIN-i5m2VhkjKrGW8Fk5VfqViBA\"}"
+  },
+  {
+   "secret_b64": "nHL2AlNuxkyc2o0J1tj0i1SvLUCJGvA91eJAJCpvUM8=",
+   "public_key_b64": "zDvxI7eYKZJNuNg280L6B+dcUnz3Ti3BSuASDg/pR0U=",
+   "kid": "beacon-1",
+   "mode": "NORMAL",
+   "seq": "1",
+   "updated_at": "2026-11-01T10:00:00Z",
+   "valid_until": null,
+   "canonical_utf8": "{\"kid\":\"beacon-1\",\"mode\":\"NORMAL\",\"schema_version\":1,\"seq\":1,\"updatedAt\":\"2026-11-01T10:00:00Z\",\"validUntil\":null}",
+   "beacon_utf8": "{\"schema_version\":1,\"mode\":\"NORMAL\",\"seq\":1,\"updatedAt\":\"2026-11-01T10:00:00Z\",\"validUntil\":null,\"kid\":\"beacon-1\",\"sig\":\"G0XHZGAWQaYNOtqrNfo_sP_mVWjCQ8TG8Nyvg23oHrevxh5hJ9pz1pQCZd4AhUrGvhMWsV3hw9kYZz5TKHGkAw\"}"
+  },
+  {
+   "secret_b64": "nHL2AlNuxkyc2o0J1tj0i1SvLUCJGvA91eJAJCpvUM8=",
+   "public_key_b64": "zDvxI7eYKZJNuNg280L6B+dcUnz3Ti3BSuASDg/pR0U=",
+   "kid": "beacon-1",
+   "mode": "STOPPED",
+   "seq": "42",
+   "updated_at": "2026-11-02T23:59:59Z",
+   "valid_until": null,
+   "canonical_utf8": "{\"kid\":\"beacon-1\",\"mode\":\"STOPPED\",\"schema_version\":1,\"seq\":42,\"updatedAt\":\"2026-11-02T23:59:59Z\",\"validUntil\":null}",
+   "beacon_utf8": "{\"schema_version\":1,\"mode\":\"STOPPED\",\"seq\":42,\"updatedAt\":\"2026-11-02T23:59:59Z\",\"validUntil\":null,\"kid\":\"beacon-1\",\"sig\":\"Y7XDFkd-pwfrdWNzKq6KVMFHrvjmlAcpLnhjFSfGo_PGPKulOwUjxEStj5iaFjdzkZTh2f6RUCt3DL5zIktvAg\"}"
+  },
+  {
+   "secret_b64": "nHL2AlNuxkyc2o0J1tj0i1SvLUCJGvA91eJAJCpvUM8=",
+   "public_key_b64": "zDvxI7eYKZJNuNg280L6B+dcUnz3Ti3BSuASDg/pR0U=",
+   "kid": "beacon-2",
+   "mode": "STARTING",
+   "seq": "7",
+   "updated_at": "2026-11-01T00:00:00Z",
+   "valid_until": "2026-11-01T01:00:00Z",
+   "canonical_utf8": "{\"kid\":\"beacon-2\",\"mode\":\"STARTING\",\"schema_version\":1,\"seq\":7,\"updatedAt\":\"2026-11-01T00:00:00Z\",\"validUntil\":\"2026-11-01T01:00:00Z\"}",
+   "beacon_utf8": "{\"schema_version\":1,\"mode\":\"STARTING\",\"seq\":7,\"updatedAt\":\"2026-11-01T00:00:00Z\",\"validUntil\":\"2026-11-01T01:00:00Z\",\"kid\":\"beacon-2\",\"sig\":\"G_u-SO4tasUzbX2VOy8omoMRPFhrRZN0c5hwijIP78uOX8O6HHTAFjYbGEejjHz6qaLrejs1XXVsIHkn68KaDw\"}"
+  },
+  {
+   "secret_b64": "nHL2AlNuxkyc2o0J1tj0i1SvLUCJGvA91eJAJCpvUM8=",
+   "public_key_b64": "zDvxI7eYKZJNuNg280L6B+dcUnz3Ti3BSuASDg/pR0U=",
+   "kid": "kid-日本",
+   "mode": "STOPPING",
+   "seq": "9007199254740993",
+   "updated_at": "2026-12-31T15:00:00Z",
+   "valid_until": null,
+   "canonical_utf8": "{\"kid\":\"kid-日本\",\"mode\":\"STOPPING\",\"schema_version\":1,\"seq\":9007199254740993,\"updatedAt\":\"2026-12-31T15:00:00Z\",\"validUntil\":null}",
+   "beacon_utf8": "{\"schema_version\":1,\"mode\":\"STOPPING\",\"seq\":9007199254740993,\"updatedAt\":\"2026-12-31T15:00:00Z\",\"validUntil\":null,\"kid\":\"kid-日本\",\"sig\":\"bXAe2bpORdtKzYHN1VJ6e8-F3ZMe2tRWTE3w3Z2ZnQpvqIHQXcbx4PLhh60S79iosIzNW2-7QxxvEfp0AWIvCg\"}"
+  }
+ ]
+}

@@ -16,13 +16,13 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-      - uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405 # v6.2.0
         with:
-          python-version: "3.13"
-      - run: pip install -r ops/requirements.txt
-      - name: ops の単体試験（偽の GCP・GCS。実 GCP には接続しない）
-        working-directory: ops
-        run: python -m unittest discover -s tests -t . -v
+          persist-credentials: false
+      - uses: ./.github/actions/setup-ops
+      - name: lint・format（Biome）
+        run: npm run --silent lint
+      - name: ops の単体試験（偽の GCP・GCS。実 GCP には接続しない。件数・skip を JUnit XML で検査）
+        run: node ops/run-tests.mjs
   terraform:
     runs-on: ubuntu-latest
     steps:
