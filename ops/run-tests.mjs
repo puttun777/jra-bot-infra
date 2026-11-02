@@ -3,7 +3,7 @@ import { spawnSync } from "node:child_process";
 import { mkdirSync, readdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 
-const MIN = 109;
+const MIN = 112;
 const dir = "build/ops/test";
 const files = readdirSync(dir)
   .filter((f) => f.endsWith(".test.js"))

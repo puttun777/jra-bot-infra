@@ -120,9 +120,14 @@ export class GcsClient {
     if (r.status === 408 || r.status === 429 || r.status >= 500)
       throw new UnknownOutcomeError(`GCS への書込みの結果が不明（HTTP ${r.status}）`);
     if (r.status !== 200) throw new GcsError(`GCS への書込みが HTTP ${r.status}`);
-    const res = parseJson(await r.text(), "GCS の応答");
-    if (!isRecord(res)) throw new GcsError("GCS の応答が不正");
-    return parseGeneration(res["generation"]);
+    // 200 の後の本文の読取り・解析の失敗は『成立したかもしれない』（結果不明）として扱い、呼出側の再読取りで確かめる
+    try {
+      const res = parseJson(await r.text(), "GCS の応答");
+      if (!isRecord(res)) throw new GcsError("GCS の応答が不正");
+      return parseGeneration(res["generation"]);
+    } catch (e) {
+      throw new UnknownOutcomeError(`GCS への書込みは 200 だが応答を読めない: ${e instanceof Error ? e.message : String(e)}`);
+    }
   }
 }
 

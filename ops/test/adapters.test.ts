@@ -254,6 +254,18 @@ describe("gcs stores", () => {
       f.nextStatus = code;
       await assert.rejects(s.write({ a: 1 }, 0n), UnknownOutcomeError);
     }
+    // 200 の後で本文を読めない（タイムアウト等）= 成立したかもしれない → 結果不明（呼出側が再読取りで確認する）
+    const brokenBody: Fetch = async (url, init) => {
+      const r = await f.fetch(url, init);
+      return {
+        status: r.status,
+        headers: r.headers,
+        text: async () => {
+          throw new Error("body timeout");
+        },
+      };
+    };
+    await assert.rejects(new GcsStateStore(new GcsClient(brokenBody, async () => "T"), "b").write({ a: 2 }, 0n), UnknownOutcomeError);
     f.nextStatus = 403;
     await assert.rejects(s.write({ a: 1 }, 0n), /HTTP 403/);
   });

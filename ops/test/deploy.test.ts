@@ -297,4 +297,39 @@ describe("review fixes (Opus L2 review)", () => {
     await deploy(new Ops(store, new FakeBeacon(), gcp(), new FakeClock(), undefined, "k"), manifest(), SCHEMA, DI);
     assert.deepEqual(S.validate(store.state).last_actual, { captured_at: "2026-11-01T09:00:00Z", db: "RUNNABLE" });
   });
+  it("interrupted during migrate: the raised rollback bound stays recorded (the migrate may continue on Cloud Run)", async () => {
+    const g = gcp();
+    g.jobExit["--mode=validate"] = 10;
+    g.hooks.runJob = async (job, args) => {
+      g.calls.push(`job:${job}:${args[0] ?? ""}`);
+      if (args[0] === "--mode=migrate") throw new (await import("../src/ports.js")).Interrupted("SIGTERM");
+      return 10;
+    };
+    const store = new FakeStore(stateIn("NORMAL", REL("2026.11.0", "2026.11.0", "5")));
+    await assert.rejects(
+      deploy(
+        new Ops(store, new FakeBeacon(), g, new FakeClock(), undefined, "k"),
+        manifest({ release: "2026.11.4", rollback: { min_app_release: "2026.11.4" }, git_sha: "d".repeat(40) }),
+        SCHEMA,
+        DI,
+      ),
+    );
+    const st = S.validate(store.state);
+    assert.equal(st.release?.schema_min_app_release, "2026.11.4", "migrate の前に下限を上げて記録した");
+    assert.equal(st.release?.schema_flyway_version, "5", "適用済みの版は上げない");
+    assert.equal(st.lease, null);
+  });
+  it("a first deploy records a conservative release before migrating", async () => {
+    const g = gcp();
+    const { store } = await run(manifest(), "NORMAL", g);
+    assert.ok(store.history.some((h) => h.includes("rollback-bound-raised")));
+    assert.equal(S.validate(store.state).release?.schema_flyway_version, "5");
+  });
+  it("a malformed recorded release is refused before any image changes", async () => {
+    const g = gcp();
+    const bad = { ...REL("2026.11.0", "latest", "5") };
+    const { err } = await rejected(manifest({ release: "2026.11.1" }), "NORMAL", g, {}, bad);
+    assert.match(err.message, /記録が不正/);
+    assert.ok(!g.calls.some((c) => c.startsWith("job")));
+  });
 });

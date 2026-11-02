@@ -137,6 +137,8 @@ export class Ops {
     await this.writeVerified(bumped, label);
     this.state = bumped;
     const type = bumped.operation?.type ?? "init";
+    // 中断の後は履歴を省く（SIGKILL までの猶予に本体の状態の書込みを優先する。本体の状態に同じ内容がある）
+    if (this.signal.aborted) return;
     try {
       await this.store.appendHistory(`${this.clock.now()}-${type}-${label}-${bumped.seq}`, bumped);
     } catch {

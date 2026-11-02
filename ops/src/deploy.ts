@@ -16,6 +16,7 @@ import { Ajv2020 } from "ajv/dist/2020.js";
 import { z } from "zod";
 import { DB_JOB, type Ops, SERVICES, StepFailed } from "./engine.js";
 import { errorMessage, isRecord, parseJson } from "./json.js";
+import { Interrupted } from "./ports.js";
 import * as S from "./state.js";
 
 export const BOT_JOBS = ["jra-bot-bot-run", "jra-bot-calendar-check", "jra-bot-reconcile", "jra-bot-retention"] as const;
@@ -96,6 +97,13 @@ export type DeployKind = "forward" | "redeploy" | "rollback";
 /** ロールバック判定（純粋関数）。current は ops-state.release（初回は null）。 */
 export function judge(m: Manifest, current: S.ReleaseInfo | null | undefined): { kind: DeployKind; problems: string[] } {
   if (current === null || current === undefined) return { kind: "forward", problems: [] };
+  // 記録の形式を先に検査する（不正なら、イメージを替える前に拒否する）
+  try {
+    compareVersions(current.schema_min_app_release, m.release);
+    compareVersions(current.schema_flyway_version, m.flyway.latest_version);
+  } catch (e) {
+    return { kind: "forward", problems: [`ops-state.release の記録が不正: ${errorMessage(e)}`] };
+  }
   const cmp = compareVersions(m.release, current.app_release);
   if (cmp > 0) {
     if (compareVersions(m.flyway.latest_version, current.schema_flyway_version) < 0) {
@@ -182,6 +190,9 @@ export async function deploy(
   }
   const mode = ops.state.mode;
   const done: string[] = [];
+  // 先に上げたロールバックの下限を、migrate を一度も実行しないまま失敗したときだけ元に戻すための記録
+  const releaseBefore = structuredClone(ops.state.release ?? null);
+  let migrateAttempted = false;
   try {
     // begin が読んだ最新の状態で判定し直す（読んでからリースを取るまでの間に他の操作が入った場合）
     if (mode === "STOPPED" && !i.allowWhenStopped) throw new DeployRejected("mode=STOPPED の deploy は既定で拒否");
@@ -198,6 +209,26 @@ export async function deploy(
     };
     const before = await snapshot();
     const img = m.images;
+    const maxV = (a: string, b: string): string => (compareVersions(a, b) >= 0 ? a : b);
+    if (j.kind === "forward") {
+      // db-migration のイメージを替える**前に**ロールバックの下限を安全側に上げて記録する（migrate 中に中断されても、
+      // Cloud Run 上の migrate は続いて DB が進み得る。記録が古いままだと、進んだスキーマで動かない版へ戻せてしまう）。
+      // 適用済みの版は下げない・上げない（実際に migrate した確認の後で上げる）。初回は app_release を対象の版、適用済みの版を 0 として記録する（保守的）
+      const prevRel = ops.state.release;
+      const s0 = structuredClone(ops.state);
+      s0.release =
+        prevRel === null || prevRel === undefined
+          ? {
+              app_release: m.release,
+              git_sha: m.git_sha,
+              schema_min_app_release: m.rollback.min_app_release,
+              schema_flyway_version: "0",
+              deployed_at: ops.clock.now(),
+              run_id: i.runId,
+            }
+          : { ...prevRel, schema_min_app_release: maxV(prevRel.schema_min_app_release, m.rollback.min_app_release) };
+      await ops.commit(s0, "rollback-bound-raised");
+    }
     if (mode === "NORMAL") {
       await ops.step("D1_migration", async () => {
         if (j.kind === "rollback") {
@@ -225,6 +256,7 @@ export async function deploy(
         if (code === 10) {
           if (!i.applyMigrations) throw await fail("未適用のマイグレーションがある（apply_migrations=true で実行）");
           log("未適用のマイグレーションを適用する");
+          migrateAttempted = true;
           if ((await gcp.runJob(DB_JOB, ["--mode=migrate"])) !== 0) throw await fail("migrate が失敗（アプリは更新していない）");
           code = await gcp.runJob(DB_JOB, ["--mode=validate"]);
         }
@@ -261,24 +293,25 @@ export async function deploy(
     const after = await snapshot();
     if (after !== before) throw new DeployRejected(`deploy の前後で ingress/IAP が変わった: ${before} → ${after}`);
     // 記録: DB に適用済みのスキーマの情報は、ロールバックでは下げない（前進修正のみ）。STOPPED では migration していないので変えない
-    const prev = ops.state.release;
     const migrated = mode === "NORMAL" && j.kind !== "rollback";
-    // db-migration のイメージを新しい版にした（STOPPED の前進 deploy）だけでも、次の ops-start が migrate し得るので、
-    // ロールバックの下限（schema_min_app_release）は**安全側に上げる**。適用済みの版（schema_flyway_version）は実際に migrate したときだけ上げる
-    // （低めに持つ = ロールバック先の要求版の検査が厳しくなる方向）
-    const imageAdvanced = j.kind === "forward" && !migrated;
-    const maxV = (a: string, b: string): string => (compareVersions(a, b) >= 0 ? a : b);
+    // 下限（schema_min_app_release）は前進 deploy の前に安全側に上げてある（上で記録）。ここでは常に max を取り、下げない。
+    // 適用済みの版（schema_flyway_version）は実際に migrate・validate できたときだけ上げる（低めに持つ = ロールバックの検査が厳しくなる方向）
+    const cur = ops.state.release;
     const s = structuredClone(ops.state);
     s.release = {
       app_release: m.release,
       git_sha: m.git_sha,
       schema_min_app_release:
-        migrated || prev === null || prev === undefined
+        cur === null || cur === undefined
           ? m.rollback.min_app_release
-          : imageAdvanced
-            ? maxV(prev.schema_min_app_release, m.rollback.min_app_release)
-            : prev.schema_min_app_release,
-      schema_flyway_version: migrated || prev === null || prev === undefined ? m.flyway.latest_version : prev.schema_flyway_version,
+          : j.kind === "forward"
+            ? maxV(cur.schema_min_app_release, m.rollback.min_app_release)
+            : cur.schema_min_app_release,
+      schema_flyway_version: migrated
+        ? cur === null || cur === undefined
+          ? m.flyway.latest_version
+          : maxV(cur.schema_flyway_version, m.flyway.latest_version)
+        : (cur?.schema_flyway_version ?? "0"),
       deployed_at: ops.clock.now(),
       run_id: i.runId,
     };
@@ -287,6 +320,12 @@ export async function deploy(
     return { release: m.release, git_sha: m.git_sha, mode, kind: j.kind, done };
   } catch (e) {
     try {
+      if (!migrateAttempted && !(e instanceof Interrupted)) {
+        // DB は進んでいない（validate で止まった・アプリの更新で失敗した）。イメージを前の版に戻したので、記録も元に戻す
+        const r = structuredClone(ops.state);
+        r.release = releaseBefore;
+        if (JSON.stringify(r.release) !== JSON.stringify(ops.state.release)) await ops.commit(r, "rollback-bound-restored");
+      }
       await ops.end(false, e instanceof Error ? e.message : String(e), false);
     } catch {
       // 記録できなくても元の失敗を伝える
