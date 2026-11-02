@@ -23,10 +23,7 @@ jobs:
       PROJECT_ID: ${{ vars.GCP_PROJECT_ID }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-      - uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405 # v6.2.0
-        with:
-          python-version: "3.13"
-      - run: pip install -r ops/requirements.txt
+      - uses: ./.github/actions/setup-ops
       - uses: ./.github/actions/gcp-auth
         with:
           workload_identity_provider: ${{ vars.GCP_WIF_PROVIDER }}
@@ -37,14 +34,14 @@ jobs:
         working-directory: ops
         run: |
           set +e
-          python -m jrabot_ops.cli status --project "$PROJECT_ID" | tee "$RUNNER_TEMP/status.md" >> "$GITHUB_STEP_SUMMARY"
+          node ../build/ops/src/cli.js status --project "$PROJECT_ID" | tee "$RUNNER_TEMP/status.md" >> "$GITHUB_STEP_SUMMARY"
           echo "code=${PIPESTATUS[0]}" >> "$GITHUB_OUTPUT"
       - name: 不整合を Discord に通知（Webhook は Secret Manager から実行時に取得。ログに出さない）
         if: steps.st.outputs.code != '0'
         run: |
           url="$(gcloud secrets versions access latest --secret=discord-error-webhook)"
           echo "::add-mask::${url}"
-          body="$(python3 -c 'import json,sys;print(json.dumps({"content":"jra-bot ops-status: 不整合を検出\n"+sys.argv[1]+"\n"+sys.argv[2]}))' "$GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID" "$(grep -E '❌' "$RUNNER_TEMP/status.md" | head -10)")"
+          body="$(jq -n --arg run "$GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID" --arg rows "$(grep -E '❌' "$RUNNER_TEMP/status.md" | head -10)" '{content: ("jra-bot ops-status: 不整合を検出\n" + $run + "\n" + $rows)}')"
           curl -fsS -H 'Content-Type: application/json' -d "$body" "$url" >/dev/null || echo "::warning::通知に失敗"
       - name: 不整合があれば失敗にする
         if: steps.st.outputs.code != '0'

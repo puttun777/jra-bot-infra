@@ -13,5 +13,5 @@ runs:
       run: |
         url="$(gcloud secrets versions access latest --secret=discord-error-webhook 2>/dev/null)" || { echo "::warning::Webhook を取得できない（通知なし）"; exit 0; }
         echo "::add-mask::${url}"
-        body="$(python3 -c 'import json,sys;print(json.dumps({"content":"jra-bot "+sys.argv[1]+"\n"+sys.argv[2]}))' "$TITLE" "$RUN_URL")"
+        body="$(jq -n --arg t "$TITLE" --arg u "$RUN_URL" '{content: ("jra-bot " + $t + "\n" + $u)}')"
         curl -fsS -H 'Content-Type: application/json' -d "$body" "$url" >/dev/null || echo "::warning::通知に失敗"

@@ -1,6 +1,6 @@
 # OPERATIONS（Runbook）
 最終更新: 2026-11-01。対象: 本人 1 名の運用。**ここに書いた手順のうち実 GCP に触れるものは、まだ一度も実行していない**（検証ゲート G-OPS-1〜9 は `OPERATIONS_DESIGN.md` §12）。実行したら結果（成否・件数のみ。秘密は貼らない）を `docs/PROGRESS.md` に記録する。
-設計の正本: `OPERATIONS_DESIGN.md`（モード・手順・ガード）。コードの正本: `ops/`（Python）、`terraform/`、`.github/workflows/`。
+設計の正本: `OPERATIONS_DESIGN.md`（モード・手順・ガード）。コードの正本: `ops/`（TypeScript。`node build/ops/src/cli.js`）、`terraform/`、`.github/workflows/`。
 
 ## 0. 前提となる本人の作業（Claude はできない・しない）
 | # | 作業 | 結果として得るもの |
@@ -31,7 +31,7 @@
 
 ## 3. Secret（値は Git に置かない）
 `gcloud secrets versions add <name> --data-file=-` で標準入力から入れる（履歴に残さない）。名前: `db-app-password` `db-ingest-password` `db-bot-password` `db-migrate-password` `db-mltrain-password` `discord-webhook` `discord-error-webhook` `ingest-token-pepper` `agent-kek` `beacon-signing-key`（Ed25519 の生 32 バイトを Base64）`model-signing-key`。
-- 鍵の生成例（出力をログ・チャットに貼らない）: `python3 -c "import os,base64;print(base64.b64encode(os.urandom(32)).decode())" | gcloud secrets versions add beacon-signing-key --data-file=-`
+- 鍵の生成例（出力をログ・チャットに貼らない）: `openssl rand -base64 32`
 - **鍵の更新**: ① 新しい鍵を新バージョンとして追加 ② 新しい `kid` を決め、ビーコンの公開鍵を取得側（Windows エージェント設定）に**先に**追加 ③ ops-start/ops-stop のどちらかを `force` なしで実行してビーコンを再署名 ④ 古い鍵を取得側から外す。`agent-kek` の更新は web の `docs/CONTRACTS.md`（エージェント資格の再暗号化）に従う（P-1 の承認が先）。
 
 ## 4. 起動・停止・状態（`ops-start` / `ops-stop` / `ops-status`）
