@@ -1,0 +1,13 @@
+# GCP の資源定義（Pulumi + TypeScript。web D-250、infra I-036。docs/PULUMI_MIGRATION.md）。
+# **`pulumi up` / `destroy` / `import` は本人の承認後**。state は GCS の DIY backend（`pulumi login gs://<bucket>/pulumi`）。秘密は state に入れない。
+name: jra-bot
+description: JRA Bot の GCP 資源（Terraform の terraform/ と同じ構成）
+runtime:
+  name: nodejs
+  options:
+    typescript: false
+main: ../build/pulumi/src/index.js
+# preview・up の前に必ず refresh する（Terraform は plan の前に必ず refresh していた。Pulumi は既定で refresh しないため、ops・deploy が変えた
+# ingress・イメージなどを古い state の値で書き戻し得る: レビュー 高。PULUMI_MIGRATION §4）
+options:
+  refresh: always

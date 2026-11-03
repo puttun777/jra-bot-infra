@@ -36,6 +36,26 @@ describe("cli", () => {
     assert.equal(await quiet(["plan-guard", "--plan-json", bad, "--mode", "NORMAL"]), 3);
     assert.equal(await quiet(["plan-guard", "--plan-json", planFile([]), "--mode", "NORMAL"]), 0);
   });
+  it("preview-guard exit codes and required project", async () => {
+    const f = (doc: unknown): string => {
+      const p = join(mkdtempSync(join(tmpdir(), "pg-")), "preview.json");
+      writeFileSync(p, JSON.stringify(doc));
+      return p;
+    };
+    const bad = f({
+      steps: [
+        {
+          op: "create",
+          urn: "urn:pulumi:prod::jra-bot::gcp:projects/iAMMember:IAMMember::x",
+          newState: { inputs: { member: "allUsers", role: "roles/owner" } },
+        },
+      ],
+    });
+    assert.equal(await quiet(["preview-guard", "--preview-json", bad, "--mode", "NORMAL", "--project", "proj-1234"]), 3);
+    assert.equal(await quiet(["preview-guard", "--preview-json", f({ steps: [] }), "--mode", "NORMAL", "--project", "proj-1234"]), 0);
+    assert.equal(await quiet(["preview-guard", "--preview-json", f({ steps: [] }), "--mode", "NORMAL"]), 2); // --project が無い
+    assert.equal(await quiet(["preview-guard", "--preview-json", f({}), "--mode", "NORMAL", "--project", "proj-1234"]), 3); // steps が無い
+  });
   it("arguments are required and validated (exit 2)", async () => {
     assert.equal(await quiet(["start", "--project", "p"]), 2);
     assert.equal(await quiet(["stop", "--project", "p", "--actor", "a", "--run-id", "r", "--drain-timeout-min", "-1"]), 2);
