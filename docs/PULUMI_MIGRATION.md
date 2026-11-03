@@ -28,14 +28,14 @@
 | `output` | `export`（秘密を含まない値だけ） | ワークフローが参照する |
 
 ## 3. 秘密と state
-- **DB ユーザーのパスワード**: Terraform は write-only 引数（`password_wo`）と ephemeral の Secret Manager 参照で state に残さなかった。@pulumi/gcp 10.2.0 にも `passwordWo` はあるが、**Pulumi が入力値を state（checkpoint の inputs）に記録しないことを確認できていない**。そのため Pulumi は DB ユーザーを作らず、ユーザーの作成とパスワードの設定は運用 CLI の明示操作（`ops db-users ensure`: Secret Manager の最新版を読み、SQL Admin API の users.insert / update で 1 回の呼出しで設定。パスワードの無いユーザーを作らない）に移す（**未実装**。L6 の後半か第 5 段階の前。本人承認の対象: infra の運用手順の変更）。
+- **DB ユーザーのパスワード**: Terraform は write-only 引数（`password_wo`）と ephemeral の Secret Manager 参照で state に残さなかった。@pulumi/gcp 10.2.0 にも `passwordWo` はあるが、**Pulumi が入力値を state（checkpoint の inputs）に記録しないことを確認できていない**。そのため Pulumi は DB ユーザーを作らず、ユーザーの作成とパスワードの設定は運用 CLI の明示操作（`ops db-users ensure`: Secret Manager の最新版を読み、SQL Admin API の users.insert / update で 1 回の呼出しで設定。パスワードの無いユーザーを作らない）に移す（**実装済み**: `node build/ops/src/cli.js db-users --project <id> [--rotate]`。試験 5 件。実 GCP では未検証。実行は本人）。
 - **state**: DIY backend（GCS。`pulumi login gs://<tfstate バケット>/pulumi`）。Pulumi の秘密（`pulumi.secret`・secret config）は**使わない**（試験で禁止）ので、秘密の暗号化の鍵（KMS は課金リソース）は要らない。passphrase の秘密管理も置かない（`PULUMI_CONFIG_PASSPHRASE` は空で固定し、秘密を入れないことを試験と preview のガードで確認する）。
 - Secret Manager の**値**（版）は Pulumi も Terraform も管理しない（本人が gcloud で入れる）。
 
 ## 4. 起動状態を変えない（OPERATIONS_DESIGN §8 を維持）
 - `ignoreChanges` で、ops が変更する値（Cloud SQL の activationPolicy・Cloud Run の ingress・Scheduler の paused）と deploy が変更する値（イメージ・revision・Job の args）を Pulumi が戻さない。
 - `refresh` は ops の値を state に取り込むだけで、上の `ignoreChanges` により差分にならない（試験は mock で ignoreChanges の設定を検査する。実 GCP での確認は本人の preview）。
-- preview のガード（`ops` に追加予定）: mode=NORMAL でないと preview/up しない（Terraform の apply 前ガードと同じ）、preview の差分に `delete`・`replace` があれば失敗にする（明示の許可が無い限り）。
+- preview のガード（**実装済み**: `ops preview-guard --preview-json <file> --mode <mode> [--allow-destroy]`。試験 8 件）: plan-guard と同じ規則（遷移中のモードでは変更しない、保護する型の削除・置換の拒否、起動状態の変更の拒否、作成時の初期値、IAP・公開の主体、DB の変更は NORMAL だけ）に加え、sql.User・SecretVersion の管理と秘密の値（Pulumi の secret の印）を拒否。未確定の値・未知の op・解釈できない URN は拒否（fail closed）。
 
 ## 5. 試験（mock。GCP 認証なし）
 - `pulumi.runtime.setMocks` でリソースを作らずに定義を評価し、Terraform の試験（base 20・deploy 13 の assert）と同じ性質を検査する: 公開アクセスの禁止、Cloud SQL の公開 IP なし・ENCRYPTED_ONLY・削除保護、DB ユーザーを作らない、WIF の条件と束縛、カスタムロールの権限（setIamPolicy 系・run.jobs.run を含めない）、Secret の数と値を持たないこと、デプロイ無効のときは Cloud Run・Scheduler を作らない、イメージは digest 参照だけ、ignoreChanges の対象、Scheduler は PAUSED で作る、など。
