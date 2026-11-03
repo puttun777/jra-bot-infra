@@ -3,7 +3,7 @@
 import assert from "node:assert/strict";
 import { before, describe, it } from "node:test";
 import * as pulumi from "@pulumi/pulumi";
-import { parseConfig, REQUIRED_RUNTIME_KEYS } from "../src/config.js";
+import { parseConfig, REQUIRED_RUNTIME_KEYS, readConfig } from "../src/config.js";
 import { DEPLOYER_PERMISSIONS, defineInfra, IGNORE, OPS_CONTROLLER_PERMISSIONS, SECRETS, TF_ROLES, WIF_WORKFLOWS } from "../src/infra.js";
 
 interface Rec {
@@ -55,11 +55,17 @@ const DEPLOY = {
   appRuntime: RUNTIME,
 };
 
+/** 資源の登録が止まるまで待つ（20ms ごとに数え、5 回続けて増えなければ終わり。遅い環境での数え漏らしを防ぐ）。 */
 async function settle(): Promise<void> {
   let last = -1;
-  for (let i = 0; i < 200 && created.length !== last; i++) {
-    last = created.length;
-    await new Promise((r) => setTimeout(r, 10));
+  let stable = 0;
+  for (let i = 0; i < 500 && stable < 5; i++) {
+    await new Promise((r) => setTimeout(r, 20));
+    if (created.length === last) stable++;
+    else {
+      stable = 0;
+      last = created.length;
+    }
   }
 }
 
@@ -112,6 +118,35 @@ describe("config (variables.tf と同じ検証)", () => {
       () => parseConfig({ ...BASE, projectId: "SECRET-VALUE-XYZ" }),
       (e: unknown) => e instanceof Error && !e.message.includes("SECRET-VALUE-XYZ"),
     );
+  });
+});
+
+describe("readConfig (stack の設定は文字列。型ごとに読む)", () => {
+  const cfg = (m: Record<string, string>) => readConfig((k) => m[k]);
+  it("plain strings stay strings (a numeric project number is not turned into a number)", () => {
+    const c = cfg({
+      projectId: "proj-1234",
+      projectNumber: "123456789012",
+      tenantId: "1",
+      schedulerResumeOnCreate: "false",
+      allowedUsers: '["me@example.com"]',
+    });
+    assert.equal(c.projectNumber, "123456789012");
+    assert.equal(c.tenantId, 1);
+    assert.equal(c.schedulerResumeOnCreate, false);
+    assert.deepEqual(c.allowedUsers, ["me@example.com"]);
+  });
+  it("bad numbers, booleans and JSON are reported by key without the value", () => {
+    assert.throws(() => cfg({ ...BASE, tenantId: "1.5" }), /tenantId/);
+    assert.throws(() => cfg({ ...BASE, schedulerResumeOnCreate: "yes" }), /schedulerResumeOnCreate/);
+    assert.throws(
+      () => cfg({ ...BASE, appRuntime: "{SECRET-LIKE" }),
+      (e: unknown) => e instanceof Error && e.message.includes("appRuntime") && !e.message.includes("SECRET-LIKE"),
+    );
+  });
+  it("admin users must be allowed users (variables.tf)", () => {
+    assert.throws(() => parseConfig({ ...BASE, allowedUsers: ["a@example.com"], adminUsers: ["b@example.com"] }), /adminUsers/);
+    assert.equal(parseConfig({ ...BASE, allowedUsers: ["a@example.com"], adminUsers: ["a@example.com"] }).adminUsers.length, 1);
   });
 });
 
@@ -183,6 +218,51 @@ describe("base (deploy 無効。base.tftest.hcl)", () => {
     assert.ok(OPS_CONTROLLER_PERMISSIONS.includes("cloudscheduler.jobs.pause"));
     const roles = ofType(res, "gcp:projects/iAMMember:IAMMember").map((m) => m.inputs["role"]);
     assert.ok(!roles.includes("roles/owner") && !roles.includes("roles/editor"));
+  });
+  it("exactly two public grants in all IAM resources (beacon read, ingest invoker via deploy only)", () => {
+    const pub = res.filter(
+      (r) =>
+        /(Iam|IAM)(Member|Binding)$/.test(r.type.split(":").pop() ?? "") &&
+        ["allUsers", "allAuthenticatedUsers"].includes(String(r.inputs["member"])),
+    );
+    assert.deepEqual(
+      pub.map((r) => r.name),
+      ["beacon-public-read"],
+    );
+  });
+  it("prefix-limited bucket grants keep their IAM conditions (Terraform と同じ式)", () => {
+    const cond = (n: string): unknown => rec(one(res, "gcp:storage/bucketIAMMember:BucketIAMMember", n).inputs["condition"])["expression"];
+    assert.equal(cond("ops-state-agent-write"), 'resource.name.startsWith("projects/_/buckets/proj-1234-ops-state/objects/agent/")');
+    assert.equal(
+      cond("model-store-bot-datasets"),
+      'resource.name.startsWith("projects/_/buckets/proj-1234-model-store/objects/datasets/")',
+    );
+    assert.equal(cond("ops-state-deploy-state"), 'resource.name.startsWith("projects/_/buckets/proj-1234-ops-state/objects/state/")');
+    assert.equal(cond("ops-state-deploy-history"), 'resource.name.startsWith("projects/_/buckets/proj-1234-ops-state/objects/history/")');
+    assert.equal(
+      one(res, "gcp:storage/bucketIAMMember:BucketIAMMember", "ops-state-deploy-history").inputs["role"],
+      "roles/storage.objectCreator",
+    );
+  });
+  it("secret access is exactly the Terraform table (13 grants)", () => {
+    const got = ofType(res, "gcp:secretmanager/secretIamMember:SecretIamMember")
+      .map((r) => `${r.name}=${String(r.inputs["member"]).split("@")[0]}`)
+      .sort();
+    assert.deepEqual(got, [
+      "access-agent-kek-ingest=serviceAccount:sa-ingest",
+      "access-beacon-signing-key-gha-ops=serviceAccount:sa-gha-ops",
+      "access-db-app-password-dashboard=serviceAccount:sa-dashboard",
+      "access-db-bot-password-bot=serviceAccount:sa-bot",
+      "access-db-ingest-password-ingest=serviceAccount:sa-ingest",
+      "access-db-migrate-password-dbmigration=serviceAccount:sa-dbmigration",
+      "access-db-mltrain-password-mltrain=serviceAccount:sa-mltrain",
+      "access-discord-error-webhook-bot=serviceAccount:sa-bot",
+      "access-discord-error-webhook-gha-ops=serviceAccount:sa-gha-ops",
+      "access-discord-webhook-bot=serviceAccount:sa-bot",
+      "access-ingest-token-pepper-dashboard=serviceAccount:sa-dashboard",
+      "access-ingest-token-pepper-ingest=serviceAccount:sa-ingest",
+      "access-model-signing-key-mltrain=serviceAccount:sa-mltrain",
+    ]);
   });
   it("no API is disabled on destroy", () => {
     const apis = ofType(res, "gcp:projects/service:Service");
@@ -259,7 +339,46 @@ describe("deploy (deploy.tftest.hcl)", () => {
       assert.equal(rec(j.inputs["retryConfig"])["retryCount"], 0);
     }
   });
+  it("scheduler URIs, DB URL and env order match Terraform", () => {
+    const uri = (n: string): unknown => rec(one(res, "gcp:cloudscheduler/job:Job", n).inputs["httpTarget"])["uri"];
+    assert.equal(
+      uri("scheduler-calendar-check"),
+      "https://run.googleapis.com/v2/projects/proj-1234/locations/asia-northeast1/jobs/jra-bot-calendar-check:run",
+    );
+    assert.equal(
+      uri("scheduler-retention"),
+      "https://run.googleapis.com/v2/projects/proj-1234/locations/asia-northeast1/jobs/jra-bot-retention:run",
+    );
+    const envs = arr(
+      rec(arr(rec(one(res, "gcp:cloudrunv2/service:Service", "dashboard").inputs["template"])["containers"])[0])["envs"],
+    ).map(rec);
+    assert.equal(envs.find((e) => e["name"] === "DB_URL")?.["value"], "jdbc:mysql://10.0.0.3:3306/jrabot?sslMode=VERIFY_CA");
+    const plainNames = envs.filter((e) => e["value"] !== undefined).map((e) => String(e["name"]));
+    const secretNames = envs.filter((e) => e["value"] === undefined).map((e) => String(e["name"]));
+    assert.deepEqual(plainNames, [...plainNames].sort()); // Terraform の dynamic env はキーの順
+    assert.deepEqual(secretNames, ["DB_PASSWORD", "INGEST_TOKEN_PEPPER"]);
+    assert.ok(envs.findIndex((e) => e["name"] === "DB_PASSWORD") > envs.findIndex((e) => e["name"] === "TZ")); // 平文のブロックの後に Secret のブロック
+  });
+  it("public grants appear only on the beacon bucket and the ingest service, with fixed targets", () => {
+    const pub = res.filter(
+      (r) =>
+        /(Iam|IAM)(Member|Binding)$/.test(r.type.split(":").pop() ?? "") &&
+        ["allUsers", "allAuthenticatedUsers"].includes(String(r.inputs["member"])),
+    );
+    assert.deepEqual(pub.map((r) => r.name).sort(), ["beacon-public-read", "ingest-public-invoker"]);
+    assert.equal(one(res, "gcp:cloudrunv2/serviceIamMember:ServiceIamMember", "ingest-public-invoker").inputs["name"], "jra-bot-ingest");
+    assert.equal(one(res, "gcp:storage/bucketIAMMember:BucketIAMMember", "beacon-public-read").inputs["bucket"], "proj-1234-mode-beacon");
+  });
   it("values changed by ops and deploy are ignored (Pulumi never flips the running state back)", () => {
+    // 期待値は定数ではなくリテラルで書く（定数どうしの比較では、無視の対象を外しても試験が通ってしまう: レビュー 中）
+    assert.deepEqual([...IGNORE.sqlInstance], ["settings.activationPolicy"]);
+    assert.deepEqual([...IGNORE.service], ["ingress", "client", "clientVersion", "template.containers[0].image", "template.revision"]);
+    assert.deepEqual([...IGNORE.botJob], ["client", "clientVersion", "template.template.containers[0].image"]);
+    assert.deepEqual(
+      [...IGNORE.argJob],
+      ["client", "clientVersion", "template.template.containers[0].image", "template.template.containers[0].args"],
+    );
+    assert.deepEqual([...IGNORE.scheduler], ["paused"]);
     const ig = (type: string, name: string): readonly string[] => {
       const o = opts.find((x) => x.type === type && x.name === name);
       assert.ok(o, `${type} ${name}`);

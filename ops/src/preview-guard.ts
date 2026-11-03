@@ -54,6 +54,43 @@ function get(d: unknown, path: readonly string[]): unknown {
   return cur;
 }
 
+/** IAM の資源の主体（member / members / policyData の bindings）。未確定・解釈できなければ undefined（呼出側が拒否する）。 */
+function iamMembers(inputs: Record<string, unknown>): string[] | undefined {
+  const m = inputs["member"];
+  if (m !== undefined) return typeof m === "string" && m !== UNKNOWN ? [m] : undefined;
+  const ms = inputs["members"];
+  if (ms !== undefined) return Array.isArray(ms) && ms.every((x) => typeof x === "string" && x !== UNKNOWN) ? (ms as string[]) : undefined;
+  const pd = inputs["policyData"];
+  if (pd !== undefined) {
+    if (typeof pd !== "string" || pd === UNKNOWN) return undefined;
+    try {
+      const policy: unknown = JSON.parse(pd);
+      const bindings = isRecord(policy) && Array.isArray(policy["bindings"]) ? policy["bindings"] : undefined;
+      if (bindings === undefined) return undefined;
+      const out: string[] = [];
+      for (const bd of bindings) {
+        if (!isRecord(bd) || !Array.isArray(bd["members"])) return undefined;
+        out.push(...bd["members"].map(String));
+      }
+      return out;
+    } catch {
+      return undefined;
+    }
+  }
+  return undefined;
+}
+
+/** 公開の主体を許すのは 2 つの資源だけで、論理名に加えて対象（ingest のサービス・ビーコンのバケット）も照合する（レビュー 中: 論理名だけでは向き先を変えられた）。 */
+function allowedPublic(type: string, name: string, inputs: Record<string, unknown>): boolean {
+  if (!ALLOWED_PUBLIC.some(([t, n]) => t === type && n === name)) return false;
+  if (name === "ingest-public-invoker") return inputs["name"] === "jra-bot-ingest" && inputs["role"] === "roles/run.invoker";
+  if (name === "beacon-public-read")
+    return (
+      typeof inputs["bucket"] === "string" && inputs["bucket"].endsWith("-mode-beacon") && inputs["role"] === "roles/storage.objectViewer"
+    );
+  return false;
+}
+
 function containsSecret(v: unknown): boolean {
   if (isRecord(v)) return v[SECRET_SIG] !== undefined || Object.values(v).some(containsSecret);
   if (Array.isArray(v)) return v.some(containsSecret);
@@ -71,8 +108,11 @@ function parseUrn(urn: string): { type: string; name: string } | undefined {
 }
 
 export function check(preview: unknown, mode: string, allowDestroy = false): string[] {
-  if (!isRecord(preview) || !(Array.isArray(preview["steps"]) || preview["steps"] === undefined))
-    return ["preview の JSON の形式が想定と違う（検査できないので拒否）"];
+  // steps が無い JSON は preview の失敗（エラー）であり得るので拒否する。変更が無い preview も steps は空の配列で出る（レビュー 中）
+  if (!isRecord(preview) || !Array.isArray(preview["steps"]))
+    return ["preview の JSON の形式が想定と違う（steps が無い。検査できないので拒否）"];
+  const diags = Array.isArray(preview["diagnostics"]) ? preview["diagnostics"] : [];
+  if (diags.some((d) => isRecord(d) && d["severity"] === "error")) return ["preview がエラーを報告している（検査できないので拒否）"];
   const steps = Array.isArray(preview["steps"]) ? preview["steps"] : [];
   const problems: string[] = [];
   const changing = steps.filter((s) => !(isRecord(s) && typeof s["op"] === "string" && NOOP_OPS.has(s["op"])));
@@ -123,15 +163,20 @@ export function check(preview: unknown, mode: string, allowDestroy = false): str
     }
     if (type === SCHEDULER && op === "create" && a && a["paused"] === false)
       problems.push(`${addr}: Scheduler は paused=true で作る（再開は ops-start だけ）`);
-    const isIam = /IamMember:|IAMMember:|IamBinding:|IAMBinding:|IamPolicy:|IAMPolicy:/.test(type);
+    // 型の最後の要素で判定する（`gcp:projects/iAMMember:IAMMember` のように大文字小文字が混ざる。レビュー 高: 末尾のコロンを要求して素通りしていた）
+    const kind = type.split(":").pop() ?? "";
+    const isIam = /(Iam|IAM)(Member|Binding|Policy)$/.test(kind);
     if (isIam && a) {
-      const m = a["member"];
-      if (m === UNKNOWN || typeof m !== "string") problems.push(`${addr}: IAM の主体が preview の時点で未確定（検査できないので拒否）`);
+      const ms = iamMembers(a);
+      if (ms === undefined) problems.push(`${addr}: IAM の主体が preview の時点で未確定・解釈できない（検査できないので拒否）`);
       else {
-        if (PUBLIC_MEMBERS.has(m) && b?.["member"] !== m && !ALLOWED_PUBLIC.some(([t, n]) => t === type && n === name))
-          problems.push(`${addr}: ${m} への付与は拒否（認証を緩める）`);
-        if (IAP_ACCESSOR_TYPES.has(type) && !(m.startsWith("user:") || m.startsWith("serviceAccount:")))
-          problems.push(`${addr}: IAP の許可に user:/serviceAccount: 以外の主体 ${m} は拒否`);
+        const beforeMembers = new Set(b ? (iamMembers(b) ?? []) : []);
+        for (const m of ms) {
+          if (PUBLIC_MEMBERS.has(m) && !beforeMembers.has(m) && !allowedPublic(type, name, a))
+            problems.push(`${addr}: ${m} への付与は拒否（認証を緩める）`);
+          if (IAP_ACCESSOR_TYPES.has(type) && !(m.startsWith("user:") || m.startsWith("serviceAccount:")))
+            problems.push(`${addr}: IAP の許可に user:/serviceAccount: 以外の主体 ${m} は拒否`);
+        }
       }
     }
     if (DB_TYPES.has(type) && mode !== "NORMAL")

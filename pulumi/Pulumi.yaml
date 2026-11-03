@@ -7,3 +7,7 @@ runtime:
   options:
     typescript: false
 main: ../build/pulumi/src/index.js
+# preview・up の前に必ず refresh する（Terraform は plan の前に必ず refresh していた。Pulumi は既定で refresh しないため、ops・deploy が変えた
+# ingress・イメージなどを古い state の値で書き戻し得る: レビュー 高。PULUMI_MIGRATION §4）
+options:
+  refresh: always

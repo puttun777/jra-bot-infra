@@ -311,8 +311,9 @@ export function defineInfra(cfg: InfraConfig, provider?: gcp.Provider, transform
   );
   new gcp.storage.BucketIAMMember(
     "beacon-public-read",
-    { bucket: modeBeacon.name, role: "roles/storage.objectViewer", member: "allUsers" },
-    opts,
+    // 公開読取りはこのバケットだけ。対象の名前は確定値で渡す（preview-guard が向き先を照合できるように。依存は dependsOn で表す）
+    { bucket: buckets.mode_beacon, role: "roles/storage.objectViewer", member: "allUsers" },
+    { ...opts, dependsOn: [modeBeacon] },
   );
   const modelStore = new gcp.storage.Bucket(
     "model-store",
@@ -535,9 +536,12 @@ export function defineInfra(cfg: InfraConfig, provider?: gcp.Provider, transform
     OPS_MODE_SOURCE: `gs://${buckets.ops_state}/state/ops-state.json`,
     DB_URL: dbUrl,
   };
-  const plain = (m: Record<string, string | pulumi.Output<string>>): Env[] => Object.entries(m).map(([name, value]) => ({ name, value }));
+  // env はキーの辞書順（Terraform の dynamic "env" は map のキーの順に並ぶ。順序が違うと import 後に差分になり新しいリビジョンが作られる: レビュー 中）
+  const byKey = <T>(m: Record<string, T>): [string, T][] => Object.entries(m).sort(([x], [y]) => (x < y ? -1 : x > y ? 1 : 0));
+  const plain = (m: Record<string, string | pulumi.Output<string>>): Env[] => byKey(m).map(([name, value]) => ({ name, value }));
   const fromSecret = (m: Record<string, SecretName>): Env[] =>
-    Object.entries(m).map(([name, s]) => ({ name, valueSource: { secretKeyRef: { secret: secret[s].secretId, version: "latest" } } }));
+    byKey(m).map(([name, s]) => ({ name, valueSource: { secretKeyRef: { secret: secret[s].secretId, version: "latest" } } }));
+
   const vpcAccess = { egress: "PRIVATE_RANGES_ONLY", networkInterfaces: [{ network: network.id, subnetwork: subnet.id }] };
   const afterSecrets: pulumi.CustomResourceOptions = { ...opts, dependsOn: [...secretAccess, ...apis] };
   const jobs: Record<string, pulumi.Output<string>> = {};
@@ -630,8 +634,9 @@ export function defineInfra(cfg: InfraConfig, provider?: gcp.Provider, transform
     // ingest はアプリ認証（トークン + HMAC。IAP の外）なので allUsers を invoker にする。ingress=internal の間は到達できない
     new gcp.cloudrunv2.ServiceIamMember(
       "ingest-public-invoker",
-      { name: ingest.name, location: region, role: "roles/run.invoker", member: "allUsers" },
-      opts,
+      // 名前は確定値（preview-guard が向き先を照合する）。依存は dependsOn で表す
+      { name: `${PREFIX}-ingest`, location: region, role: "roles/run.invoker", member: "allUsers" },
+      { ...opts, dependsOn: [ingest] },
     );
     // dashboard: 直接 IAP。許可リストは本人のメールだけ（空なら誰も入れない）
     for (const u of cfg.allowedUsers) {

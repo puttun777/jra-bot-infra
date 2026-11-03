@@ -31,6 +31,7 @@ function parseQuiet(text: string, what: string): unknown {
 }
 
 const SecretAccess = z.looseObject({ payload: z.looseObject({ data: z.string() }) });
+const Operation = z.looseObject({ name: z.string(), status: z.string().optional(), error: z.unknown().optional() });
 const UsersList = z.looseObject({ items: z.array(z.looseObject({ name: z.string(), host: z.string().optional() })).optional() });
 
 export interface DbUsersResult {
@@ -50,6 +51,10 @@ export async function ensureDbUsers(opts: {
   readonly fetchFn: Fetch;
   readonly token: () => Promise<string>;
   readonly instance?: string;
+  /** 非同期の操作の完了を待つ間隔（試験では 0）。 */
+  readonly sleep?: (ms: number) => Promise<void>;
+  readonly pollIntervalMs?: number;
+  readonly maxPolls?: number;
 }): Promise<DbUsersResult> {
   if (opts.mode !== "NORMAL")
     throw new DbUsersError(`mode=${opts.mode} の間は DB ユーザーを変更しない（DB が起動している NORMAL のときだけ）`);
@@ -72,6 +77,29 @@ export async function ensureDbUsers(opts: {
     // 応答の本文は出さない（エラーの本文に値が含まれ得る）。状態コードと操作だけ
     if (r.status < 200 || r.status >= 300) throw new DbUsersError(`${method} ${url.replace(/\?.*$/, "")} が HTTP ${r.status}`);
     return text;
+  };
+  const sleep = opts.sleep ?? ((ms: number) => new Promise<void>((r) => setTimeout(r, ms)));
+  /**
+   * users.insert / update は非同期の Operation を返す。完了（DONE）まで待ち、error があれば失敗にする（レビュー 中: 待たずに created と報告し、
+   * 続けて送ると 409 になり得た）。1 件ずつ順に行う。
+   */
+  const waitDone = async (text: string, what: string): Promise<void> => {
+    let op = Operation.safeParse(parseQuiet(text, what));
+    for (let i = 0; ; i++) {
+      if (!op.success) throw new DbUsersError(`${what} の応答（Operation）の形式が想定と違う`);
+      if (op.data.status === "DONE") {
+        if (op.data.error !== undefined && op.data.error !== null) throw new DbUsersError(`${what} の操作が失敗した`); // 詳細は出さない
+        return;
+      }
+      if (i >= (opts.maxPolls ?? 90)) throw new DbUsersError(`${what} の操作が終わらない`);
+      await sleep(opts.pollIntervalMs ?? 2000);
+      op = Operation.safeParse(
+        parseQuiet(
+          await call("GET", `https://sqladmin.googleapis.com/v1/projects/${opts.project}/operations/${encodeURIComponent(op.data.name)}`),
+          what,
+        ),
+      );
+    }
   };
   const listed = UsersList.safeParse(parseQuiet(await call("GET", sql), "users.list"));
   if (!listed.success) throw new DbUsersError("users.list の応答の形式が想定と違う");
@@ -96,10 +124,13 @@ export async function ensureDbUsers(opts: {
     if (password.length < MIN_PASSWORD || /[\r\n]/.test(password))
       throw new DbUsersError(`${secret} の値が短い、または改行を含む（${MIN_PASSWORD} 文字以上の 1 行）`);
     if (has) {
-      await call("PUT", `${sql}?name=${encodeURIComponent(user)}&host=${encodeURIComponent("%")}`, { name: user, host: "%", password });
+      await waitDone(
+        await call("PUT", `${sql}?name=${encodeURIComponent(user)}&host=${encodeURIComponent("%")}`, { name: user, host: "%", password }),
+        `users.update(${user})`,
+      );
       updated.push(user);
     } else {
-      await call("POST", sql, { name: user, host: "%", password });
+      await waitDone(await call("POST", sql, { name: user, host: "%", password }), `users.insert(${user})`);
       created.push(user);
     }
   }

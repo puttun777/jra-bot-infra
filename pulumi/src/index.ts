@@ -1,36 +1,12 @@
 // Pulumi の入口（`pulumi preview` / `up` が読む。**up は本人の承認後**）。設定は zod で検査し、秘密は扱わない（PULUMI_MIGRATION §3）。
 import * as gcp from "@pulumi/gcp";
 import * as pulumi from "@pulumi/pulumi";
-import { parseConfig } from "./config.js";
+import { readConfig } from "./config.js";
 import { defineInfra } from "./infra.js";
 
+// 設定は `jrabot:` の名前空間（例: `pulumi config set jrabot:projectId my-project`）。配列・オブジェクトは JSON の文字列
 const c = new pulumi.Config("jrabot");
-const raw: Record<string, unknown> = {};
-for (const k of [
-  "projectId",
-  "projectNumber",
-  "region",
-  "githubRepoInfra",
-  "githubRepoWeb",
-  "allowedUsers",
-  "adminUsers",
-  "tenantId",
-  "dbTier",
-  "dbVersion",
-  "dbDiskSizeGb",
-  "dbDiskAutoresizeLimitGb",
-  "maintenanceWindow",
-  "releaseImages",
-  "appRuntime",
-  "alertEmail",
-  "billingAccountId",
-  "monthlyBudgetJpy",
-  "schedulerResumeOnCreate",
-]) {
-  const v = c.getObject<unknown>(k);
-  if (v !== undefined) raw[k] = v;
-}
-const cfg = parseConfig(raw);
+const cfg = readConfig((k) => c.get(k));
 const provider = new gcp.Provider("gcp", { project: cfg.projectId, region: cfg.region });
 const out = defineInfra(cfg, provider);
 

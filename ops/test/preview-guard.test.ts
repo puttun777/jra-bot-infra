@@ -102,15 +102,23 @@ describe("preview-guard", () => {
     );
   });
   it("public members only where allowed; unknown members are refused; IAP accessors are users or service accounts", () => {
-    assert.deepEqual(check(preview(step("create", BIM, "beacon-public-read", undefined, { member: "allUsers" })), "NORMAL"), []);
-    assert.deepEqual(
-      check(
-        preview(
-          step("create", "gcp:cloudrunv2/serviceIamMember:ServiceIamMember", "ingest-public-invoker", undefined, { member: "allUsers" }),
-        ),
-        "NORMAL",
-      ),
-      [],
+    const beacon = { bucket: "proj-1234-mode-beacon", role: "roles/storage.objectViewer", member: "allUsers" };
+    const invoker = { name: "jra-bot-ingest", role: "roles/run.invoker", member: "allUsers" };
+    const SIM = "gcp:cloudrunv2/serviceIamMember:ServiceIamMember";
+    assert.deepEqual(check(preview(step("create", BIM, "beacon-public-read", undefined, beacon)), "NORMAL"), []);
+    assert.deepEqual(check(preview(step("create", SIM, "ingest-public-invoker", undefined, invoker)), "NORMAL"), []);
+    // 許可された論理名でも、向き先・役割が違えば拒否（dashboard を公開にする・モデルのバケットを公開にする）
+    assert.ok(
+      check(preview(step("create", SIM, "ingest-public-invoker", undefined, { ...invoker, name: "jra-bot-dashboard" })), "NORMAL").length >
+        0,
+    );
+    assert.ok(
+      check(preview(step("create", BIM, "beacon-public-read", undefined, { ...beacon, bucket: "proj-1234-model-store" })), "NORMAL")
+        .length > 0,
+    );
+    assert.ok(
+      check(preview(step("create", BIM, "beacon-public-read", undefined, { ...beacon, role: "roles/storage.objectAdmin" })), "NORMAL")
+        .length > 0,
     );
     assert.ok(
       check(preview(step("create", BIM, "model-store-bot-read", undefined, { member: "allUsers" })), "NORMAL").some((x) =>
@@ -130,6 +138,54 @@ describe("preview-guard", () => {
       ),
     );
     assert.deepEqual(check(preview(step("create", iap, "dashboard-user-x", undefined, { member: "user:me@example.com" })), "NORMAL"), []);
+  });
+  it("project and service-account IAM are checked too (members, bindings and policies)", () => {
+    const PIM = "gcp:projects/iAMMember:IAMMember";
+    const SAIM = "gcp:serviceaccount/iAMMember:IAMMember";
+    assert.ok(
+      check(preview(step("create", PIM, "x", undefined, { role: "roles/owner", member: "allUsers" })), "NORMAL").some((x) =>
+        x.includes("allUsers"),
+      ),
+    );
+    assert.ok(
+      check(
+        preview(step("create", PIM, "x", undefined, { role: "roles/viewer", member: "04da6b54-80e4-46f7-96ec-b56ff0331ba9" })),
+        "NORMAL",
+      ).some((x) => x.includes("未確定")),
+    );
+    assert.ok(
+      check(
+        preview(step("update", SAIM, "wif-deploy", { member: "principalSet://x" }, { member: "allAuthenticatedUsers" })),
+        "NORMAL",
+      ).some((x) => x.includes("allAuthenticatedUsers")),
+    );
+    assert.ok(
+      check(
+        preview(
+          step("create", "gcp:projects/iAMBinding:IAMBinding", "b", undefined, { role: "r", members: ["user:a@example.com", "allUsers"] }),
+        ),
+        "NORMAL",
+      ).length > 0,
+    );
+    const policy = JSON.stringify({ bindings: [{ role: "r", members: ["allAuthenticatedUsers"] }] });
+    assert.ok(
+      check(preview(step("create", "gcp:projects/iAMPolicy:IAMPolicy", "p", undefined, { policyData: policy })), "NORMAL").length > 0,
+    );
+    assert.ok(
+      check(preview(step("create", "gcp:projects/iAMPolicy:IAMPolicy", "p", undefined, { policyData: "not json" })), "NORMAL").length > 0,
+    );
+    assert.deepEqual(
+      check(
+        preview(step("create", PIM, "x", undefined, { role: "roles/viewer", member: "serviceAccount:sa@p.iam.gserviceaccount.com" })),
+        "NORMAL",
+      ),
+      [],
+    );
+  });
+  it("a preview without steps or with error diagnostics is refused", () => {
+    assert.equal(check({}, "NORMAL").length, 1);
+    assert.equal(check({ steps: [], diagnostics: [{ severity: "error", message: "x" }] }, "NORMAL").length, 1);
+    assert.deepEqual(check({ steps: [], diagnostics: [{ severity: "warning", message: "x" }] }, "NORMAL"), []);
   });
   it("DB changes only in NORMAL; provider replacement is refused", () => {
     assert.ok(

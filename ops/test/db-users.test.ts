@@ -13,7 +13,10 @@ interface Call {
 
 const PW = (u: string): string => `pw-${u}-0123456789abcdefghij`;
 
-function fake(existing: string[], opts: { failOn?: string; secret?: (s: string) => string } = {}): { fetchFn: Fetch; calls: Call[] } {
+function fake(
+  existing: string[],
+  opts: { failOn?: string; secret?: (s: string) => string; opError?: boolean } = {},
+): { fetchFn: Fetch; calls: Call[] } {
   const calls: Call[] = [];
   const fetchFn: Fetch = async (url, init) => {
     calls.push({ method: init.method, url, body: init.body?.toString("utf8"), auth: init.headers["Authorization"] });
@@ -26,14 +29,20 @@ function fake(existing: string[], opts: { failOn?: string; secret?: (s: string) 
       const value = opts.secret ? opts.secret(name) : PW(user);
       return res(200, { payload: { data: Buffer.from(value).toString("base64") } });
     }
+    if (url.includes("/operations/"))
+      return res(200, {
+        name: "op-1",
+        status: "DONE",
+        ...(opts.opError ? { error: { errors: [{ code: "X", message: "SECRET-IN-OP" }] } } : {}),
+      });
     if (init.method === "GET") return res(200, { items: existing.map((name) => ({ name, host: "%" })) });
-    return res(200, { kind: "sql#operation" });
+    return res(200, { kind: "sql#operation", name: "op-1", status: "PENDING" });
   };
   return { fetchFn, calls };
 }
 
 const run = (f: Fetch, mode = "NORMAL", rotate = false) =>
-  ensureDbUsers({ project: "proj-1234", mode, rotate, fetchFn: f, token: async () => "tok" });
+  ensureDbUsers({ project: "proj-1234", mode, rotate, fetchFn: f, token: async () => "tok", sleep: async () => {}, pollIntervalMs: 0 });
 
 describe("db-users", () => {
   it("creates only missing users, with the password from Secret Manager in the request body only", async () => {
@@ -82,6 +91,38 @@ describe("db-users", () => {
     await assert.rejects(
       ensureDbUsers({ project: "Bad/Project", mode: "NORMAL", rotate: false, fetchFn: bad, token: async () => "t" }),
       DbUsersError,
+    );
+  });
+  it("waits for each asynchronous SQL Admin operation and fails on an operation error without echoing it", async () => {
+    const ok = fake([]);
+    await run(ok.fetchFn);
+    const seq = ok.calls.filter((c) => !c.url.includes("secretmanager")).map((c) => (c.url.includes("/operations/") ? "WAIT" : c.method));
+    assert.deepEqual(seq, ["GET", "POST", "WAIT", "POST", "WAIT", "POST", "WAIT", "POST", "WAIT", "POST", "WAIT"]); // 1 件ずつ完了を待ってから次へ
+    const failed = fake([], { opError: true });
+    await assert.rejects(
+      run(failed.fetchFn),
+      (e: unknown) => e instanceof DbUsersError && e.message.includes("失敗") && !e.message.includes("SECRET-IN-OP"),
+    );
+    assert.equal(failed.calls.filter((c) => c.method === "POST").length, 1); // 失敗したら先へ進まない
+  });
+  it("gives up on an operation that never finishes", async () => {
+    const stuck: Fetch = async (url, init) => {
+      const res = (body: unknown) => ({ status: 200, headers: { get: () => null }, text: async () => JSON.stringify(body) });
+      if (url.includes("secretmanager")) return res({ payload: { data: Buffer.from("x".repeat(30)).toString("base64") } });
+      if (init.method === "GET" && !url.includes("/operations/")) return res({ items: [] });
+      return res({ name: "op-1", status: "RUNNING" });
+    };
+    await assert.rejects(
+      ensureDbUsers({
+        project: "proj-1234",
+        mode: "NORMAL",
+        rotate: false,
+        fetchFn: stuck,
+        token: async () => "t",
+        sleep: async () => {},
+        maxPolls: 3,
+      }),
+      /終わらない/,
     );
   });
 });

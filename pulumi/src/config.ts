@@ -78,7 +78,12 @@ export const InfraConfig = z
     monthlyBudgetJpy: z.number().int().positive().default(12000),
     schedulerResumeOnCreate: z.boolean().default(false),
   })
-  .strict();
+  .strict()
+  // variables.tf の admin_users の検証と同じ: 管理者は許可リストの中から（レビュー 中）
+  .refine((c) => c.adminUsers.every((u) => c.allowedUsers.includes(u)), {
+    message: "adminUsers は allowedUsers の中から",
+    path: ["adminUsers"],
+  });
 export type InfraConfig = z.infer<typeof InfraConfig>;
 
 /** 失敗は項目名と理由だけ（値は出さない）。 */
@@ -89,4 +94,56 @@ export function parseConfig(raw: unknown): InfraConfig {
     throw new Error(`Pulumi の設定が不正: ${issues}`);
   }
   return r.data;
+}
+
+const STRING_KEYS = [
+  "projectId",
+  "projectNumber",
+  "region",
+  "githubRepoInfra",
+  "githubRepoWeb",
+  "dbTier",
+  "dbVersion",
+  "alertEmail",
+  "billingAccountId",
+] as const;
+const NUMBER_KEYS = ["tenantId", "dbDiskSizeGb", "dbDiskAutoresizeLimitGb", "monthlyBudgetJpy"] as const;
+const BOOLEAN_KEYS = ["schedulerResumeOnCreate"] as const;
+const JSON_KEYS = ["allowedUsers", "adminUsers", "maintenanceWindow", "releaseImages", "appRuntime"] as const;
+
+/**
+ * stack の設定（`jrabot:<key>`。Pulumi の設定は文字列で保存される）を型ごとに読む（レビュー 高: すべてを getObject = JSON.parse で読んでいたため、
+ * 通常の文字列の設定が例外になり、数字の文字列は数値になっていた）。文字列はそのまま、数値・真偽は厳密に変換、配列・オブジェクトだけ JSON。
+ * 失敗は項目名と理由だけ（値は出さない）。
+ */
+export function readConfig(get: (key: string) => string | undefined): InfraConfig {
+  const raw: Record<string, unknown> = {};
+  const bad: string[] = [];
+  for (const k of STRING_KEYS) {
+    const v = get(k);
+    if (v !== undefined) raw[k] = v;
+  }
+  for (const k of NUMBER_KEYS) {
+    const v = get(k);
+    if (v === undefined) continue;
+    if (/^-?[0-9]+$/.test(v)) raw[k] = Number(v);
+    else bad.push(`${k}: 整数ではない`);
+  }
+  for (const k of BOOLEAN_KEYS) {
+    const v = get(k);
+    if (v === undefined) continue;
+    if (v === "true" || v === "false") raw[k] = v === "true";
+    else bad.push(`${k}: true / false ではない`);
+  }
+  for (const k of JSON_KEYS) {
+    const v = get(k);
+    if (v === undefined) continue;
+    try {
+      raw[k] = JSON.parse(v);
+    } catch {
+      bad.push(`${k}: JSON として読めない`);
+    }
+  }
+  if (bad.length > 0) throw new Error(`Pulumi の設定が不正: ${bad.join("; ")}`);
+  return parseConfig(raw);
 }
