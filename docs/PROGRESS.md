@@ -1,5 +1,9 @@
 # PROGRESS（jra-bot-infra）
-最終更新: 2026-11-02（L2: ops を TypeScript へ。旧: 2026-11-01 第5段階のコード・workflow・Runbook）
+最終更新: 2026-11-02（L3 同期: release-manifest v3。L2: ops を TypeScript へ。旧: 2026-11-01 第5段階のコード・workflow・Runbook）
+
+## 2026-11-02 L3 同期: release-manifest schema_version 3（ブランチ claude/lang-l3-manifest-v3。I-035）
+- web の言語移行 L3（ML 学習を Kotlin へ）に合わせ、`schemas/release-manifest.v3.json`（web の写し。`runtime.python` を削除）。deploy.yml の `--schema`、ops の試験（v2 の manifest を拒否する試験を追加。119 件成功）、CONTRACTS（I-H10・I-H11）、OPERATIONS。
+- **web の L3 PR と同時にマージする**（片方だけでは web が作る v3 の manifest を infra が受け付けない、または逆）。
 
 ## 2026-11-02 L2: ops を TypeScript へ移行（ブランチ claude/lang-l2-ops-ts。web の言語移行 D-250。I-030・I-031）
 - **ops/src**（TypeScript strict）: `state`（zod）・`engine`（start/stop）・`deploy`（リース・ロールバック判定・release の記録）・`status`・`plan-guard`（Terraform 用の移植）・`beacon`（Ed25519）・`gcp/gcloud`・`gcp/gcs`（JSON API・generation は bigint）・`cli`（終了コード 0/1/2/3 は旧版と同じ。中断も 1）。旧 `ops/jrabot_ops`・`ops/tests`（Python）は削除。

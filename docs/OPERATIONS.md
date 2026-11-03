@@ -42,7 +42,7 @@
 - 定期 status（毎日 09:17 JST）: 不整合があれば Discord のエラー Webhook に通知。**自動修復はしない**。
 
 ## 5. デプロイ（`deploy.yml`）とロールバック
-- 入力は web の `release-manifest.json`（URL + SHA-256）だけ。検証: スキーマ（`schemas/release-manifest.v2.json`、web の写し）・プロジェクトの一致・digest 固定・`contract_version` 0.4.x・プレビュー拒否。
+- 入力は web の `release-manifest.json`（URL + SHA-256）だけ。検証: スキーマ（`schemas/release-manifest.v3.json`、web の写し。schema_version 3 = web CONTRACTS 0.4.17 で runtime.python を削除）・プロジェクトの一致・digest 固定・`contract_version` 0.4.x・プレビュー拒否。
 - 順序: db-migration のイメージ更新 → `validate`（0 / 10 / 1 / 75）→ 10 なら `migrate` → 再 validate が 0 → 各 Job → ingest → dashboard → ヘルスチェック → **ingress/IAP が deploy の前後で不変**。`mode=NORMAL` 以外は既定で拒否（`allow_when_stopped` はイメージ参照のみ・migration なし）。
 - **ロールバック**: アプリは前の manifest で deploy を再実行（`rollback.min_app_release` 以上のみ。スキーマは前進のみで、migration の巻き戻しはしない = 後方互換な migration しか入れない設計）。DB に問題があるときは §6 の復元。
 - `deploy` が validate で拒否しても db-migration の Job のイメージは新しい版のまま残る。**直後に ops-start を `apply_pending_migrations` 付きで実行しない**（検証されていない版が適用され得る）。前の manifest で deploy をやり直してから行う。

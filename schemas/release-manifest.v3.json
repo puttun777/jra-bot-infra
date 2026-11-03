@@ -1,8 +1,8 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "https://github.com/puttun777/jra-bot-web/docs/schemas/release-manifest.v2.json",
-  "title": "release-manifest (production, schema_version 2)",
-  "description": "CONTRACTS §10。デプロイ（infra）が入力にする本番用マニフェスト。仮値・未生成のイメージ・プレビューは受け付けない。ドライラン成果物は release-manifest-preview.v2.json（別スキーマ）で、このスキーマには適合しない",
+  "$id": "https://github.com/puttun777/jra-bot-web/docs/schemas/release-manifest.v3.json",
+  "title": "release-manifest (production, schema_version 3)",
+  "description": "CONTRACTS §10。デプロイ（infra）が入力にする本番用マニフェスト。仮値・未生成のイメージ・プレビューは受け付けない。ドライラン成果物は release-manifest-preview.v3.json（別スキーマ）で、このスキーマには適合しない",
   "type": "object",
   "additionalProperties": false,
   "required": [
@@ -24,7 +24,7 @@
   ],
   "properties": {
     "schema_version": {
-      "const": 2
+      "const": 3
     },
     "release": {
       "type": "string",
@@ -168,19 +168,14 @@
       "type": "object",
       "additionalProperties": false,
       "required": [
-        "jdk",
-        "python"
+        "jdk"
       ],
       "properties": {
         "jdk": {
           "const": "25"
-        },
-        "python": {
-          "type": "string",
-          "pattern": "^3\\.[0-9]+\\.[0-9]+$",
-          "description": "ml-train の Python"
         }
-      }
+      },
+      "description": "実行環境。schema_version 3（CONTRACTS 0.4.17）で python を削除した（ml-train を含む 5 つのイメージはすべて JDK 25。D-257）"
     },
     "notes": {
       "type": "string",
