@@ -3,7 +3,9 @@
   "private": true,
   "description": "運用 CLI（ops/）と GCP の資源定義（Pulumi。pulumi/）の TypeScript。jra-bot-web の docs/LANGUAGE_MIGRATION.md",
   "type": "module",
-  "engines": { "node": ">=24.22.2 <25" },
+  "engines": {
+    "node": ">=24.22.2 <25"
+  },
   "scripts": {
     "build": "tsc -p ops/tsconfig.json",
     "lint": "biome check ops",
@@ -17,6 +19,8 @@
     "typescript": "6.0.3"
   },
   "dependencies": {
+    "@pulumi/gcp": "10.2.0",
+    "@pulumi/pulumi": "3.270.0",
     "ajv": "8.20.0",
     "zod": "4.6.7"
   }
