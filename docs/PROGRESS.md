@@ -5,7 +5,9 @@
 - `pulumi/`（Pulumi.yaml・src/config.ts〔zod〕・src/infra.ts〔Terraform と 1 対 1〕・src/index.ts・test/infra.test.ts〔mock 18 件〕・run-tests.mjs）、`ops preview-guard`（試験 8 件）、`ops db-users`（試験 5 件）、CI の ops-tests ジョブに Pulumi の試験、`docs/PULUMI_MIGRATION.md`（対応表・秘密と state・起動状態・試験・承認後の手順・版・npm audit）。
 - **検証（ローカル。Node 24.22.2）**: lint・tsc（ops と pulumi）、ops 132 件・pulumi 18 件（skip 0）。**未実施**: `pulumi preview`（GCP 認証も Pulumi CLI も無い）、`terraform fmt/validate/test`（このセッションに terraform が無い: CI で確認）。
 - **本人の承認が必要**: 実リソース・Terraform state の有無の確認、`pulumi up`/`import`、Terraform のワークフローの停止と削除、preview のワークフローと WIF の束縛の追加、`ops db-users` の実行（PULUMI_MIGRATION §6）。
-- **次**: 独立レビュー（Opus。Terraform→Pulumi 移行と IAM・WIF は重要レビューの区分）→ 修正 → push・PR。
+- **独立レビュー（Opus・読取り専用。GitHub の第三者 Approve ではない）**: 初回 高 3・中 6・低 5（I-037）→ 修正後の確認で中 1（公開の主体の置換）→ 修正 → 高・中なし。
+- **検証したコミット**: 3cd9328 の上で `npm ci --ignore-scripts`・lint・ops 138 件・pulumi 27 件（skip 0）。**未実施**: terraform fmt/validate/test（terraform 定義は変更なし。CI で確認）、`pulumi preview`（認証・CLI なし）。
+- **次**: PR → CI → マージ。その後、web の L7（フロント TS）。
 
 ## 2026-11-02 L3 同期: release-manifest schema_version 3（ブランチ claude/lang-l3-manifest-v3。I-035）
 - web の言語移行 L3（ML 学習を Kotlin へ）に合わせ、`schemas/release-manifest.v3.json`（web の写し。`runtime.python` を削除）。deploy.yml の `--schema`、ops の試験（v2 の manifest を拒否する試験を追加。119 件成功）、CONTRACTS（I-H10・I-H11）、OPERATIONS。
