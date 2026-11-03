@@ -1,7 +1,9 @@
 /** Pulumi の preview-guard（Terraform の plan-guard と同じ規則。PULUMI_MIGRATION §4）。 */
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
-import { check } from "../src/preview-guard.js";
+import { check as guard } from "../src/preview-guard.js";
+
+const check = (p: unknown, mode: string, allowDestroy = false): string[] => guard(p, mode, allowDestroy, "proj-1234");
 
 const urn = (type: string, name: string): string => `urn:pulumi:prod::jra-bot::${type}::${name}`;
 const step = (
@@ -138,6 +140,28 @@ describe("preview-guard", () => {
       ),
     );
     assert.deepEqual(check(preview(step("create", iap, "dashboard-user-x", undefined, { member: "user:me@example.com" })), "NORMAL"), []);
+  });
+  it("replacing the target of an existing public grant is refused (the grant was already public before)", () => {
+    const SIM = "gcp:cloudrunv2/serviceIamMember:ServiceIamMember";
+    const invoker = { name: "jra-bot-ingest", role: "roles/run.invoker", member: "allUsers" };
+    const beacon = { bucket: "proj-1234-mode-beacon", role: "roles/storage.objectViewer", member: "allUsers" };
+    assert.ok(
+      check(preview(step("replace", SIM, "ingest-public-invoker", invoker, { ...invoker, name: "jra-bot-dashboard" })), "NORMAL").length >
+        0,
+    );
+    assert.ok(
+      check(preview(step("replace", BIM, "beacon-public-read", beacon, { ...beacon, bucket: "proj-1234-model-store" })), "NORMAL").length >
+        0,
+    );
+    assert.ok(
+      check(preview(step("update", BIM, "beacon-public-read", beacon, { ...beacon, role: "roles/storage.objectAdmin" })), "NORMAL").length >
+        0,
+    );
+    assert.ok(
+      check(preview(step("create", BIM, "beacon-public-read", undefined, { ...beacon, bucket: "other-proj-mode-beacon" })), "NORMAL")
+        .length > 0,
+    ); // 別プロジェクト
+    assert.deepEqual(check(preview(step("update", BIM, "beacon-public-read", beacon, beacon)), "NORMAL"), []);
   });
   it("project and service-account IAM are checked too (members, bindings and policies)", () => {
     const PIM = "gcp:projects/iAMMember:IAMMember";

@@ -97,11 +97,17 @@ export async function main(argv: readonly string[], signal: AbortSignal = new Ab
       const { values: a } = parseArgs({
         args: [...rest],
         strict: true,
-        options: { "preview-json": { type: "string" }, mode: { type: "string" }, "allow-destroy": { type: "boolean", default: false } },
+        options: {
+          "preview-json": { type: "string" },
+          mode: { type: "string" },
+          project: { type: "string" },
+          "allow-destroy": { type: "boolean", default: false },
+        },
       });
       const mode = need(a.mode, "--mode");
+      const project = need(a.project, "--project");
       if (!["NORMAL", "STOPPED", "STARTING", "STOPPING", "UNKNOWN"].includes(mode)) throw new UsageError(`--mode が不正: ${mode}`);
-      const problems = previewGuard.check(loadJson(need(a["preview-json"], "--preview-json")), mode, a["allow-destroy"]);
+      const problems = previewGuard.check(loadJson(need(a["preview-json"], "--preview-json")), mode, a["allow-destroy"], project);
       for (const p of problems) console.log(`::error::${p}`);
       console.log(`preview-guard: ${problems.length > 0 ? "NG" : "OK"}`);
       return problems.length > 0 ? 3 : 0;

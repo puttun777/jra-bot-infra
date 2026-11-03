@@ -208,6 +208,46 @@ describe("base (deploy 無効。base.tftest.hcl)", () => {
       );
     }
   });
+  it("WIF attribute mapping, the infra SA roles and actAs grants are exactly the Terraform ones", () => {
+    const p = one(res, "gcp:iam/workloadIdentityPoolProvider:WorkloadIdentityPoolProvider", "github");
+    assert.deepEqual(p.inputs["attributeMapping"], {
+      "google.subject": "assertion.sub",
+      "attribute.repository": "assertion.repository",
+      "attribute.ref": "assertion.ref",
+      "attribute.workflow_ref": "assertion.workflow_ref",
+      "attribute.job_workflow_ref": "assertion.job_workflow_ref",
+      "attribute.environment": "assertion.environment",
+    });
+    const tfRoles = ofType(res, "gcp:projects/iAMMember:IAMMember")
+      .filter((m) => m.name.startsWith("tf-"))
+      .map((m) => String(m.inputs["role"]))
+      .sort();
+    assert.equal(tfRoles.length, 15);
+    assert.ok(tfRoles.every((r) => r.startsWith("roles/") && !["roles/owner", "roles/editor"].includes(r)));
+    const actAs = ofType(res, "gcp:serviceaccount/iAMMember:IAMMember")
+      .filter((m) => m.inputs["role"] === "roles/iam.serviceAccountUser")
+      .map((m) => m.name)
+      .sort();
+    assert.deepEqual(actAs, [
+      "deploy-act-as-bot",
+      "deploy-act-as-dashboard",
+      "deploy-act-as-dbmigration",
+      "deploy-act-as-ingest",
+      "deploy-act-as-mltrain",
+      "ops-act-as-dashboard",
+      "ops-act-as-dbmigration",
+      "ops-act-as-ingest",
+      "tf-act-as-bot",
+      "tf-act-as-dashboard",
+      "tf-act-as-dbmigration",
+      "tf-act-as-gha-deploy",
+      "tf-act-as-gha-ops",
+      "tf-act-as-gha-tf",
+      "tf-act-as-ingest",
+      "tf-act-as-mltrain",
+      "tf-act-as-scheduler",
+    ]);
+  });
   it("roles: no owner/editor, no setIamPolicy, no run.jobs.run; ops can stop SQL and pause Scheduler", () => {
     for (const r of TF_ROLES) assert.ok(!["roles/owner", "roles/editor"].includes(r));
     for (const p of [...OPS_CONTROLLER_PERMISSIONS, ...DEPLOYER_PERMISSIONS]) {

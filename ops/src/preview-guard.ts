@@ -81,13 +81,11 @@ function iamMembers(inputs: Record<string, unknown>): string[] | undefined {
 }
 
 /** 公開の主体を許すのは 2 つの資源だけで、論理名に加えて対象（ingest のサービス・ビーコンのバケット）も照合する（レビュー 中: 論理名だけでは向き先を変えられた）。 */
-function allowedPublic(type: string, name: string, inputs: Record<string, unknown>): boolean {
+function allowedPublic(type: string, name: string, inputs: Record<string, unknown>, project: string): boolean {
   if (!ALLOWED_PUBLIC.some(([t, n]) => t === type && n === name)) return false;
   if (name === "ingest-public-invoker") return inputs["name"] === "jra-bot-ingest" && inputs["role"] === "roles/run.invoker";
   if (name === "beacon-public-read")
-    return (
-      typeof inputs["bucket"] === "string" && inputs["bucket"].endsWith("-mode-beacon") && inputs["role"] === "roles/storage.objectViewer"
-    );
+    return project !== "" && inputs["bucket"] === `${project}-mode-beacon` && inputs["role"] === "roles/storage.objectViewer"; // 別プロジェクトの同名のバケットに向けさせない
   return false;
 }
 
@@ -107,7 +105,7 @@ function parseUrn(urn: string): { type: string; name: string } | undefined {
   return type !== "" && name !== "" ? { type, name } : undefined;
 }
 
-export function check(preview: unknown, mode: string, allowDestroy = false): string[] {
+export function check(preview: unknown, mode: string, allowDestroy = false, project = ""): string[] {
   // steps が無い JSON は preview の失敗（エラー）であり得るので拒否する。変更が無い preview も steps は空の配列で出る（レビュー 中）
   if (!isRecord(preview) || !Array.isArray(preview["steps"]))
     return ["preview の JSON の形式が想定と違う（steps が無い。検査できないので拒否）"];
@@ -170,9 +168,9 @@ export function check(preview: unknown, mode: string, allowDestroy = false): str
       const ms = iamMembers(a);
       if (ms === undefined) problems.push(`${addr}: IAM の主体が preview の時点で未確定・解釈できない（検査できないので拒否）`);
       else {
-        const beforeMembers = new Set(b ? (iamMembers(b) ?? []) : []);
         for (const m of ms) {
-          if (PUBLIC_MEMBERS.has(m) && !beforeMembers.has(m) && !allowedPublic(type, name, a))
+          // 変更前から付いていても、向き先・役割を変える置換があり得るので、公開の主体がある限り常に照合する（再レビュー 中）
+          if (PUBLIC_MEMBERS.has(m) && !allowedPublic(type, name, a, project))
             problems.push(`${addr}: ${m} への付与は拒否（認証を緩める）`);
           if (IAP_ACCESSOR_TYPES.has(type) && !(m.startsWith("user:") || m.startsWith("serviceAccount:")))
             problems.push(`${addr}: IAP の許可に user:/serviceAccount: 以外の主体 ${m} は拒否`);
