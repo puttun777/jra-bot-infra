@@ -7,10 +7,10 @@
     "node": ">=24.22.2 <25"
   },
   "scripts": {
-    "build": "tsc -p ops/tsconfig.json",
-    "lint": "biome check ops",
-    "format": "biome check --write ops",
-    "test": "npm run --silent build && node ops/run-tests.mjs",
+    "build": "tsc -p ops/tsconfig.json && tsc -p pulumi/tsconfig.json",
+    "lint": "biome check ops pulumi",
+    "format": "biome check --write ops pulumi",
+    "test": "npm run --silent build && node ops/run-tests.mjs && node pulumi/run-tests.mjs",
     "ops": "node build/ops/src/cli.js"
   },
   "devDependencies": {

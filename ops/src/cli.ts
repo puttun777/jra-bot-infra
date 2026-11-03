@@ -1,5 +1,5 @@
 /**
- * ワークフローから呼ぶ入口。`node build/ops/src/cli.js <start|stop|status|mode|deploy|plan-guard> ...`（旧 `python -m jrabot_ops.cli` の移植。引数名は同じ）。
+ * ワークフローから呼ぶ入口。`node build/ops/src/cli.js <start|stop|status|mode|deploy|plan-guard|preview-guard|db-users> ...`（旧 `python -m jrabot_ops.cli` の移植。引数名は同じ）。
  *
  * 認証は実行環境（GitHub Actions の WIF → sa-gha-ops）が与える。長期キーは受け取らない。ビーコンの署名鍵は Secret Manager から実行時に読み、ログに出さない。
  * 終了コード（契約。旧版と同じ）: 0 成功 / 1 失敗（STARTING・STOPPING のまま残り得る。再実行で続きから。**中断（キャンセル）も 1**）
@@ -9,6 +9,7 @@
  */
 import { parseArgs } from "node:util";
 import { privateKeyFromSecret } from "./beacon.js";
+import { DbUsersError, ensureDbUsers } from "./db-users.js";
 import { DeployRejected, deploy, loadJson } from "./deploy.js";
 import { Ops, StepFailed } from "./engine.js";
 import { GcloudAdapter, spawnRunner } from "./gcp/gcloud.js";
@@ -16,6 +17,7 @@ import { GcsBeaconStore, GcsClient, GcsStateStore, gcloudToken } from "./gcp/gcs
 import { errorMessage } from "./json.js";
 import * as planGuard from "./plan-guard.js";
 import { type Clock, Interrupted } from "./ports.js";
+import * as previewGuard from "./preview-guard.js";
 import * as S from "./state.js";
 import { collect, hasProblem, render } from "./status.js";
 
@@ -90,6 +92,40 @@ export async function main(argv: readonly string[], signal: AbortSignal = new Ab
       for (const p of problems) console.log(`::error::${p}`);
       console.log(`plan-guard: ${problems.length > 0 ? "NG" : "OK"}`);
       return problems.length > 0 ? 3 : 0;
+    }
+    if (cmd === "preview-guard") {
+      const { values: a } = parseArgs({
+        args: [...rest],
+        strict: true,
+        options: { "preview-json": { type: "string" }, mode: { type: "string" }, "allow-destroy": { type: "boolean", default: false } },
+      });
+      const mode = need(a.mode, "--mode");
+      if (!["NORMAL", "STOPPED", "STARTING", "STOPPING", "UNKNOWN"].includes(mode)) throw new UsageError(`--mode が不正: ${mode}`);
+      const problems = previewGuard.check(loadJson(need(a["preview-json"], "--preview-json")), mode, a["allow-destroy"]);
+      for (const p of problems) console.log(`::error::${p}`);
+      console.log(`preview-guard: ${problems.length > 0 ? "NG" : "OK"}`);
+      return problems.length > 0 ? 3 : 0;
+    }
+    if (cmd === "db-users") {
+      // Pulumi が作らない DB ユーザーの作成（PULUMI_MIGRATION §3）。パスワードは Secret Manager から読み、要求の本文にだけ載せる
+      const { values: a } = parseArgs({
+        args: [...rest],
+        strict: true,
+        options: { project: { type: "string" }, rotate: { type: "boolean", default: false } },
+      });
+      const project = need(a.project, "--project");
+      const { raw } = await stores(project).state.read();
+      let mode = "UNKNOWN";
+      if (raw !== undefined) {
+        try {
+          mode = S.validate(raw).mode;
+        } catch {
+          mode = "UNKNOWN";
+        }
+      }
+      const r = await ensureDbUsers({ project, mode, rotate: a.rotate, fetchFn: fetch, token: gcloudToken(spawnRunner) });
+      console.log(`db-users: created=[${r.created.join(",")}] updated=[${r.updated.join(",")}] unchanged=[${r.unchanged.join(",")}]`);
+      return 0;
     }
     if (cmd === "mode") {
       const { values: a } = parseArgs({ args: [...rest], strict: true, options: { project: { type: "string" } } });
@@ -213,7 +249,7 @@ export async function main(argv: readonly string[], signal: AbortSignal = new Ab
       console.log(JSON.stringify("dryRun" in out ? out : { mode: ops.state.mode, seq: ops.state.seq }));
       return 0;
     }
-    throw new UsageError(`未知のコマンド: ${String(cmd)}（start | stop | status | mode | deploy | plan-guard）`);
+    throw new UsageError(`未知のコマンド: ${String(cmd)}（start | stop | status | mode | deploy | plan-guard | preview-guard | db-users）`);
   } catch (e) {
     if (e instanceof UsageError || (e instanceof TypeError && "code" in e && String(e.code).startsWith("ERR_PARSE_ARGS"))) {
       console.error(e.message);
@@ -221,6 +257,10 @@ export async function main(argv: readonly string[], signal: AbortSignal = new Ab
     }
     if (e instanceof S.Rejected) {
       console.log(`::error::拒否: ${e.message}`);
+      return 3;
+    }
+    if (e instanceof DbUsersError) {
+      console.log(`::error::db-users: ${e.message}`);
       return 3;
     }
     if (e instanceof StepFailed) {
