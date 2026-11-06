@@ -221,6 +221,14 @@ export async function deploy(
     };
     const before = await snapshot();
     const img = m.images;
+    // 以後の手順がイメージを更新する Job がすべて存在することを、ロールバックの下限・DB を変える**前に**確かめる（IaC の適用が先。
+    // 新しい Job〔backtest〕を含む版を IaC の適用前に deploy すると、migrate の後の D2 で失敗して途中の状態が残っていた: I-038 のレビュー 中）
+    const missing: string[] = [];
+    for (const job of [...BOT_JOBS, ML_JOB]) if ((await gcp.jobImage(job)) === undefined) missing.push(job);
+    if (missing.length > 0)
+      throw new DeployRejected(
+        `Job が無い（または読めない）: ${missing.join(", ")}。先に IaC を適用する（DB・Job・サービスは変更していない）`,
+      );
     const maxV = (a: string, b: string): string => (compareVersions(a, b) >= 0 ? a : b);
     if (j.kind === "forward") {
       // db-migration のイメージを替える**前に**ロールバックの下限を安全側に上げて記録する（migrate 中に中断されても、
