@@ -1,5 +1,11 @@
 # PROGRESS（jra-bot-infra）
-最終更新: 2026-11-03（L6: Pulumi の定義・試験・ガード。旧: 2026-11-02 L3 同期: release-manifest v3。L2: ops を TypeScript へ。旧: 2026-11-01 第5段階のコード・workflow・Runbook）
+最終更新: 2026-11-06（backtest の Job・deploy の BOT_JOBS の修正。I-038）。旧: 2026-11-03（L6: Pulumi の定義・試験・ガード。旧: 2026-11-02 L3 同期: release-manifest v3。L2: ops を TypeScript へ。旧: 2026-11-01 第5段階のコード・workflow・Runbook）
+
+## 2026-11-06 backtest の Job（ブランチ claude/l8-backtest-job。I-038。**適用はしない**）
+- web の `--task=backtest`（CONTRACTS 0.4.18・D-265）に合わせ、Pulumi と Terraform に Cloud Run Job `backtest` を追加。deploy の `BOT_JOBS` に `export-dataset`（漏れていた既存の不具合）と `backtest` を追加し、Pulumi の試験で集合の一致を照合。
+- deploy は D1 の前に全 bot の Job と ml-train の存在を確かめる（IaC の適用が先。レビューの中5）。
+- **検証（ローカル。Node 24.22.2）**: lint、ops 140 件・pulumi 28 件（skip 0）、`terraform fmt -check`。**未実施**: `terraform validate`・`terraform test`（registry.terraform.io にこの環境から接続できない。CI の terraform ジョブで確認）、`pulumi preview`（GCP の認証なし）。
+- **次**: web の PR（D-265）と合わせて CI → マージ。
 
 ## 2026-11-03 L6: Terraform → Pulumi（TypeScript）（ブランチ claude/lang-l6-pulumi。I-036。**適用はしない**）
 - `pulumi/`（Pulumi.yaml・src/config.ts〔zod〕・src/infra.ts〔Terraform と 1 対 1〕・src/index.ts・test/infra.test.ts〔mock 18 件〕・run-tests.mjs）、`ops preview-guard`（試験 8 件）、`ops db-users`（試験 5 件）、CI の ops-tests ジョブに Pulumi の試験、`docs/PULUMI_MIGRATION.md`（対応表・秘密と state・起動状態・試験・承認後の手順・版・npm audit）。

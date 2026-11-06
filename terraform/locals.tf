@@ -110,6 +110,16 @@ locals {
       with_runtime    = false
       with_discord    = false
     }
+    # バックテスト（web D-265・CONTRACTS 0.4.18）。bot-run と同じ BOT_RUN_*・ML の設定、Discord なし、DB は読取りだけ。本人が手動で実行する
+    "backtest" = {
+      args            = ["--task=backtest", "--tenant-id=${var.tenant_id}"]
+      cpu             = "1"
+      memory          = "2Gi"
+      timeout_seconds = 3600
+      pool_max        = "1"
+      with_runtime    = true
+      with_discord    = false
+    }
   }
 
   # Scheduler（JST）。calendar-check は開催日の朝〜夕に 15 分ごと、reconcile は夜に、retention は月 1 回

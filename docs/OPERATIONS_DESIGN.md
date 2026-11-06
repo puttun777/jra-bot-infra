@@ -89,7 +89,9 @@ stateDiagram-v2
 | Cloud SQL（Enterprise, db-g1-small, プライベート IP のみ） | `activation-policy=ALWAYS`（RUNNABLE） | `activation-policy=NEVER`（STOPPED） | `gcloud sql instances patch --activation-policy=…` + 状態ポーリング | ストレージ・バックアップ（公開 IP を持たないので IP 課金なし※要確認） |
 | Cloud Run `dashboard`（直接 IAP、min=0） | `ingress=all`、IAP 有効、許可リストは Terraform | `ingress=internal` | `gcloud run services update --ingress=…` | なし（スケールゼロ） |
 | Cloud Run `ingest`（min=0、アプリ認証） | `ingress=all` | `ingress=internal` | 同上 | なし |
-| Cloud Run Jobs `bot` / `calendar-check` / `reconcile` / `retention` / `db-migration` / `ml-train` / `export-dataset` | 定義のみ（実行は Scheduler/手動） | 実行中のものを排出→キャンセル | `gcloud run jobs executions list/cancel` | なし |
+| Cloud Run Jobs `bot` / `calendar-check` / `reconcile` / `retention` / `db-migration` / `ml-train` / `export-dataset` / `backtest` | 定義のみ（実行は Scheduler/手動） | 実行中のものを排出→キャンセル | `gcloud run jobs executions list/cancel` | なし |
+
+- deploy（ロールバックを含む）は、ロールバックの下限・DB を変える前に bot の全 Job と ml-train の存在を確かめ、1 つでも無い・読めない（権限・一時的な障害を含む）と何も変えずに拒否する（I-038）。新しい Job を含む版は IaC の適用が先。Job を手で消した・壊した場合は至急のロールバックも拒否されるので、先に IaC で戻す。
 | Cloud Scheduler（`calendar-check`、`reconcile`、`retention`、`ml-train`[初期 paused]） | `ENABLED`（ml-train は設定次第） | `PAUSED` | `gcloud scheduler jobs pause/resume` | ジョブ数課金（停止中も） |
 | ビーコン / 状態 | `NORMAL` | `STOPPED` | GCS 書込（CAS） | 極小 |
 - **bot を start/stop が直接起動することは無い**（開催判定は calendar-check。非開催日に NORMAL へ戻しても bot は起動しない: 要件）。

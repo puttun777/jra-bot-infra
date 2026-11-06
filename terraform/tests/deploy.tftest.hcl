@@ -75,8 +75,8 @@ run "jobs_never_retry_and_bot_run_has_14h_timeout" {
     error_message = "bot-run は 14 時間"
   }
   assert {
-    condition     = toset(keys(google_cloud_run_v2_job.bot)) == toset(["bot-run", "calendar-check", "reconcile", "retention", "export-dataset"])
-    error_message = "bot の Job は 5 種類（bot イメージ + --task）"
+    condition     = toset(keys(google_cloud_run_v2_job.bot)) == toset(["bot-run", "calendar-check", "reconcile", "retention", "export-dataset", "backtest"])
+    error_message = "bot の Job は 6 種類（bot イメージ + --task）"
   }
 }
 

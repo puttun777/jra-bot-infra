@@ -1,5 +1,6 @@
 /** 試験用の偽物（旧 ops/tests/fakes.py の移植）。実 GCP の代わりの状態機械。呼び出しの順序を calls に残す。 */
 
+import { BOT_JOBS, ML_JOB } from "../src/deploy.js";
 import type { BeaconStore, Clock, Gcp } from "../src/ports.js";
 import {
   ConflictError,
@@ -112,7 +113,10 @@ export class FakeGcp implements Gcp {
   jobExit: Record<string, number> = { "--mode=validate": 0, "--mode=migrate": 0 };
   externallyReachable = false;
   calls: string[] = [];
-  jobImages: Record<string, string> = {};
+  /** 既存の Job（IaC で作成済み）。deploy は D1 の前に、BOT_JOBS と ml-train がすべて存在することを確かめる */
+  jobImages: Record<string, string> = Object.fromEntries(
+    [...BOT_JOBS, ML_JOB].map((j) => [j, `asia-northeast1-docker.pkg.dev/p/r/initial@sha256:${"0".repeat(64)}`]),
+  );
   serviceImages: Record<string, string> = {};
   /** 試験が差し替える関数 */
   hooks: Partial<{

@@ -4,7 +4,7 @@ import { generateKeyPairSync } from "node:crypto";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { describe, it } from "node:test";
-import { checkManifest, compareVersions, DeployRejected, deploy, judge } from "../src/deploy.js";
+import { BOT_JOBS, checkManifest, compareVersions, DeployRejected, deploy, judge } from "../src/deploy.js";
 import { Ops } from "../src/engine.js";
 import * as S from "../src/state.js";
 import { FakeBeacon, FakeClock, FakeGcp, FakeStore } from "./fakes.js";
@@ -159,6 +159,23 @@ describe("deploy", () => {
       assert.equal(s.operation?.status, "FAILED");
       assert.equal(s.release, null, "失敗した deploy は release を記録しない");
     }
+  });
+  it("a missing job (IaC not applied yet) is refused before the rollback bound, the DB or any image changes (I-038)", async () => {
+    const g = gcp();
+    delete g.jobImages["jra-bot-backtest"];
+    const { err, store } = await rejected(manifest(), "NORMAL", g);
+    assert.match(err.message, /jra-bot-backtest/);
+    assert.ok(!g.calls.some((c) => c.startsWith("job:") || c.startsWith("job-image:") || c.startsWith("svc-image")), g.calls.join(","));
+    const s = S.validate(store.state);
+    assert.equal(s.release, null, "下限も release も記録しない");
+    assert.equal(s.lease, null);
+  });
+  it("a successful deploy puts the new bot image on every bot-image job, including export-dataset and backtest", async () => {
+    const g = gcp();
+    await run(manifest(), "NORMAL", g);
+    const bot = `asia-northeast1-docker.pkg.dev/${PRJ}/jra-bot/bot@sha256:${H}`;
+    for (const job of BOT_JOBS) assert.equal(g.jobImages[job], bot, job);
+    assert.ok(BOT_JOBS.includes("jra-bot-export-dataset") && BOT_JOBS.includes("jra-bot-backtest"));
   });
   it("schema mismatch or db unreachable stops before apps", async () => {
     for (const code of [1, 75]) {

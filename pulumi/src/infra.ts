@@ -43,7 +43,7 @@ type SecretName = (typeof SECRETS)[number];
 export const SERVICE_ACCOUNTS = {
   dashboard: "dashboard の実行",
   ingest: "ingest の実行",
-  bot: "bot（bot-run・calendar-check・reconcile・retention・export-dataset）の実行",
+  bot: "bot（bot-run・calendar-check・reconcile・retention・export-dataset・backtest）の実行",
   dbmigration: "db-migration の実行",
   mltrain: "ml-train の実行",
   scheduler: "Cloud Scheduler が Job を起動する",
@@ -195,6 +195,16 @@ export function botJobs(tenantId: number): Readonly<Record<string, BotJob>> {
       timeoutSeconds: 3600,
       poolMax: "2",
       withRuntime: false,
+      withDiscord: false,
+    },
+    // バックテスト（web D-265・CONTRACTS 0.4.18）。bot-run と同じ判定の設定（BOT_RUN_*・ML）を使い、DB に書かず通知しない。本人が --from/--to を付けて手動で実行する
+    backtest: {
+      args: ["--task=backtest", t],
+      cpu: "1",
+      memory: "2Gi",
+      timeoutSeconds: 3600,
+      poolMax: "1",
+      withRuntime: true,
       withDiscord: false,
     },
   };

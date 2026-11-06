@@ -68,6 +68,11 @@
 | 権限 | OPERATIONS_DESIGN §11、ARCHITECTURE §5 |
 
 
+## 4c. 2026-11-06 同期（web CONTRACTS 0.4.18。R16: web D-265・infra I-038）
+| ID | 内容 | infra 側 |
+|---|---|---|
+| I-H12 | bot に `--task=backtest`（本人が `--from`・`--to` を付けて手動で実行。DB は読取りだけ・通知しない）。環境変数は bot-run と同じ `BOT_RUN_*`・ML、Discord なし、`DB_POOL_MAX=1`。接続プールの合計は 25（≤ 25） | Cloud Run Job `jra-bot-backtest`（Pulumi の botJobs・Terraform の locals.bot_jobs。Scheduler なし）。deploy の `BOT_JOBS` に追加（同時に、漏れていた `jra-bot-export-dataset` も追加） |
+
 ## 4b. 2026-11-02 同期（web CONTRACTS 0.4.17。言語移行 L3: web D-257）
 | ID | 内容 | infra 側 |
 |---|---|---|
