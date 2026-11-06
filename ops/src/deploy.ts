@@ -19,7 +19,15 @@ import { errorMessage, isRecord, parseJson } from "./json.js";
 import { Interrupted } from "./ports.js";
 import * as S from "./state.js";
 
-export const BOT_JOBS = ["jra-bot-bot-run", "jra-bot-calendar-check", "jra-bot-reconcile", "jra-bot-retention"] as const;
+/** bot イメージの Job（deploy がイメージを更新する。Pulumi/Terraform の bot Job と同じ集合: pulumi の試験が照合する。export-dataset が漏れていて古いイメージのまま残っていた不具合も直した） */
+export const BOT_JOBS = [
+  "jra-bot-bot-run",
+  "jra-bot-calendar-check",
+  "jra-bot-reconcile",
+  "jra-bot-retention",
+  "jra-bot-export-dataset",
+  "jra-bot-backtest",
+] as const;
 export const ML_JOB = "jra-bot-ml-train";
 export const CONTRACT_MAJOR_MINOR = "0.4";
 export const REGION = "asia-northeast1";

@@ -1,10 +1,21 @@
 // Pulumi の定義の mock 試験（GCP 認証なし。資源は作らない）。Terraform の試験（terraform/tests/base・deploy.tftest.hcl）と同じ性質を検査する。
 // **mock の成功は実 GCP の preview の成功ではない**（docs/PULUMI_MIGRATION.md §5）。
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
+import { join } from "node:path";
 import { before, describe, it } from "node:test";
 import * as pulumi from "@pulumi/pulumi";
 import { parseConfig, REQUIRED_RUNTIME_KEYS, readConfig } from "../src/config.js";
-import { DEPLOYER_PERMISSIONS, defineInfra, IGNORE, OPS_CONTROLLER_PERMISSIONS, SECRETS, TF_ROLES, WIF_WORKFLOWS } from "../src/infra.js";
+import {
+  botJobs,
+  DEPLOYER_PERMISSIONS,
+  defineInfra,
+  IGNORE,
+  OPS_CONTROLLER_PERMISSIONS,
+  SECRETS,
+  TF_ROLES,
+  WIF_WORKFLOWS,
+} from "../src/infra.js";
 
 interface Rec {
   readonly type: string;
@@ -335,9 +346,10 @@ describe("deploy (deploy.tftest.hcl)", () => {
     );
     assert.ok(m.some((x) => x.startsWith("serviceAccount:sa-gha-ops@")));
   });
-  it("bot jobs: 5 tasks, no retries, bot-run 14 hours, runtime and discord only where needed", () => {
+  it("bot jobs: 6 tasks, no retries, bot-run 14 hours, runtime and discord only where needed", () => {
     const jobs = ofType(res, "gcp:cloudrunv2/job:Job").filter((j) => !["job-db-migration", "job-ml-train"].includes(j.name));
     assert.deepEqual(jobs.map((j) => j.name).sort(), [
+      "job-backtest",
       "job-bot-run",
       "job-calendar-check",
       "job-export-dataset",
@@ -357,6 +369,26 @@ describe("deploy (deploy.tftest.hcl)", () => {
       envNames("job-calendar-check").includes("CALENDAR_WATCH_START_MINUTES") && envNames("job-calendar-check").includes("RUN_JOBS_PREFIX"),
     );
     assert.ok(!envNames("job-reconcile").includes("RUN_JOBS_PREFIX"));
+    // backtest は bot-run と同じ判定の設定（BOT_RUN_*）を持ち、通知の宛先（Discord）と起動の権限の設定は持たない
+    assert.ok(envNames("job-backtest").includes("BOT_RUN_MAX_ODDS_AGE_SECONDS") && envNames("job-backtest").includes("MODEL_STORE_URI"));
+    assert.ok(!envNames("job-backtest").includes("DISCORD_WEBHOOK_URL") && !envNames("job-backtest").includes("RUN_JOBS_PREFIX"));
+    const pool = (n: string): unknown =>
+      arr(rec(arr(inner(one(res, "gcp:cloudrunv2/job:Job", n))["containers"])[0])["envs"])
+        .map(rec)
+        .find((e) => e["name"] === "DB_POOL_MAX")?.["value"];
+    assert.equal(pool("job-backtest"), "1");
+  });
+  it("ops deploy updates the image of every bot-image job defined here (no job left on an old image)", () => {
+    const src = readFileSync(join(process.cwd(), "ops", "src", "deploy.ts"), "utf8"); // 試験はリポジトリの最上位で実行する（package.json の test）
+    const m = /export const BOT_JOBS = \[([^\]]*)\]/.exec(src);
+    assert.ok(m?.[1] !== undefined, "BOT_JOBS が読めない");
+    const listed = [...m[1].matchAll(/"([^"]+)"/g)].map((x) => x[1]).sort();
+    assert.deepEqual(
+      listed,
+      Object.keys(botJobs(1))
+        .map((k) => `jra-bot-${k}`)
+        .sort(),
+    );
   });
   it("secrets reach containers only by reference (no plain secret values)", () => {
     for (const j of [...ofType(res, "gcp:cloudrunv2/job:Job"), ...ofType(res, "gcp:cloudrunv2/service:Service")]) {
@@ -426,7 +458,7 @@ describe("deploy (deploy.tftest.hcl)", () => {
     };
     assert.deepEqual(ig("gcp:sql/databaseInstance:DatabaseInstance", "db"), IGNORE.sqlInstance);
     for (const n of ["dashboard", "ingest"]) assert.deepEqual(ig("gcp:cloudrunv2/service:Service", n), IGNORE.service);
-    for (const n of ["job-bot-run", "job-calendar-check", "job-reconcile", "job-retention", "job-export-dataset"])
+    for (const n of ["job-bot-run", "job-calendar-check", "job-reconcile", "job-retention", "job-export-dataset", "job-backtest"])
       assert.deepEqual(ig("gcp:cloudrunv2/job:Job", n), IGNORE.botJob);
     for (const n of ["job-db-migration", "job-ml-train"]) assert.deepEqual(ig("gcp:cloudrunv2/job:Job", n), IGNORE.argJob);
     for (const n of ["scheduler-calendar-check", "scheduler-reconcile", "scheduler-retention"])

@@ -3,7 +3,7 @@ locals {
   service_accounts = {
     dashboard   = "dashboard の実行"
     ingest      = "ingest の実行"
-    bot         = "bot（bot-run・calendar-check・reconcile・retention・export-dataset）の実行"
+    bot         = "bot（bot-run・calendar-check・reconcile・retention・export-dataset・backtest）の実行"
     dbmigration = "db-migration の実行"
     mltrain     = "ml-train の実行"
     scheduler   = "Cloud Scheduler が Job を起動する"
