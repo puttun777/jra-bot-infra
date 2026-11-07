@@ -521,7 +521,7 @@ export function defineInfra(cfg: InfraConfig, provider?: gcp.Provider, transform
         },
         attributeCondition:
           `assertion.repository == "${cfg.githubRepoWeb}" && assertion.workflow_ref == "${webWorkflowRef}" && ` +
-          `assertion.ref == "${WIF_REF}" && assertion.environment == "${WEB_RELEASE_ENVIRONMENT}"`,
+          `assertion.ref == "${WIF_REF}" && assertion.environment == "${WEB_RELEASE_ENVIRONMENT}" && assertion.event_name == "workflow_dispatch"`,
         oidc: { issuerUri: "https://token.actions.githubusercontent.com" },
       },
       opts,

@@ -499,7 +499,7 @@ describe("web image push (web D-276。既定は無効)", () => {
     const ref = `puttun777/jra-bot-web/.github/workflows/${WEB_RELEASE_WORKFLOW}@refs/heads/main`;
     assert.equal(
       p.inputs["attributeCondition"],
-      `assertion.repository == "puttun777/jra-bot-web" && assertion.workflow_ref == "${ref}" && assertion.ref == "refs/heads/main" && assertion.environment == "release"`,
+      `assertion.repository == "puttun777/jra-bot-web" && assertion.workflow_ref == "${ref}" && assertion.ref == "refs/heads/main" && assertion.environment == "release" && assertion.event_name == "workflow_dispatch"`,
     );
     assert.deepEqual(p.inputs["attributeMapping"], infraProvider.inputs["attributeMapping"]);
     const bind = one(res, "gcp:serviceaccount/iAMMember:IAMMember", "wif-web-push");
