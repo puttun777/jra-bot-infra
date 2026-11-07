@@ -14,6 +14,7 @@ import {
   OPS_CONTROLLER_PERMISSIONS,
   SECRETS,
   TF_ROLES,
+  WEB_RELEASE_WORKFLOW,
   WIF_WORKFLOWS,
 } from "../src/infra.js";
 
@@ -477,5 +478,47 @@ describe("deploy (deploy.tftest.hcl)", () => {
     const inv = m.filter((x) => x.inputs["role"] === "roles/run.invoker");
     assert.equal(inv.length, 3);
     for (const x of inv) assert.match(String(x.inputs["member"]), /^serviceAccount:sa-scheduler@/);
+  });
+});
+
+describe("web image push (web D-276。既定は無効)", () => {
+  it("is not created by default (CONTRACTS §1: push の権限は推測しない)", async () => {
+    const { res } = await define(BASE);
+    assert.equal(parseConfig(BASE).enableWebPush, false);
+    assert.equal(res.filter((r) => r.name === "github-web" || r.name === "sa-gha-web-push" || r.name.includes("web-push")).length, 0);
+  });
+  it("when enabled: a web-only provider for release.yml on main in the release environment, and an SA that can only write to the jra-bot registry", async () => {
+    const { res } = await define({ ...BASE, enableWebPush: true });
+    const infraProvider = one(res, "gcp:iam/workloadIdentityPoolProvider:WorkloadIdentityPoolProvider", "github");
+    assert.equal(
+      infraProvider.inputs["attributeCondition"],
+      'assertion.repository == "puttun777/jra-bot-infra"',
+      "infra の provider は web を拒否したまま",
+    );
+    const p = one(res, "gcp:iam/workloadIdentityPoolProvider:WorkloadIdentityPoolProvider", "github-web");
+    const ref = `puttun777/jra-bot-web/.github/workflows/${WEB_RELEASE_WORKFLOW}@refs/heads/main`;
+    assert.equal(
+      p.inputs["attributeCondition"],
+      `assertion.repository == "puttun777/jra-bot-web" && assertion.workflow_ref == "${ref}" && assertion.ref == "refs/heads/main" && assertion.environment == "release"`,
+    );
+    assert.deepEqual(p.inputs["attributeMapping"], infraProvider.inputs["attributeMapping"]);
+    const bind = one(res, "gcp:serviceaccount/iAMMember:IAMMember", "wif-web-push");
+    assert.equal(bind.inputs["role"], "roles/iam.workloadIdentityUser");
+    assert.match(
+      String(bind.inputs["member"]),
+      new RegExp(`/attribute\\.workflow_ref/${ref.replaceAll(".", "\\.").replaceAll("/", "\\/")}$`),
+    );
+    const writer = one(res, "gcp:artifactregistry/repositoryIamMember:RepositoryIamMember", "registry-writer-gha-web-push");
+    assert.equal(writer.inputs["role"], "roles/artifactregistry.writer");
+    assert.match(String(writer.inputs["member"]), /^serviceAccount:sa-gha-web-push@/);
+    // その SA の権限はこの 1 件と WIF の利用者だけ（プロジェクトの権限・他のリポジトリ・バケット・Secret は無い）
+    const grants = res.filter(
+      (r) => JSON.stringify(r.inputs).includes("sa-gha-web-push@") && r.type !== "gcp:serviceaccount/account:Account",
+    );
+    assert.deepEqual(grants.map((g) => g.name).sort(), ["registry-writer-gha-web-push"]);
+    const writers = ofType(res, "gcp:artifactregistry/repositoryIamMember:RepositoryIamMember").filter(
+      (m) => m.inputs["role"] === "roles/artifactregistry.writer",
+    );
+    assert.equal(writers.length, 1, "registry に書けるのは web の公開用 SA だけ");
   });
 });

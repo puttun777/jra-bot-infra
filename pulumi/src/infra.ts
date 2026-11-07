@@ -130,6 +130,9 @@ export const TF_ROLES = [
 
 /** WIF で束縛するワークフロー（main ブランチの対象ファイルだけ）。 */
 export const WIF_REF = "refs/heads/main";
+/** web の公開ワークフロー（web D-276）。web 専用の provider がこのワークフロー・main・環境 release だけを受け付ける。 */
+export const WEB_RELEASE_WORKFLOW = "release.yml";
+export const WEB_RELEASE_ENVIRONMENT = "release";
 export const WIF_WORKFLOWS: Readonly<Record<string, { sa: SaKey; file: string }>> = {
   "ops-start": { sa: "gha-ops", file: "ops-start.yml" },
   "ops-stop": { sa: "gha-ops", file: "ops-stop.yml" },
@@ -234,6 +237,8 @@ export interface InfraOutputs {
   readonly cloudSqlInstance: pulumi.Output<string>;
   readonly serviceAccounts: Readonly<Record<string, pulumi.Output<string>>>;
   readonly wifProvider: pulumi.Output<string>;
+  /** web の公開（web D-276）。enableWebPush のときだけ。 */
+  readonly webPush: { readonly serviceAccount: pulumi.Output<string>; readonly provider: pulumi.Output<string> } | null;
   readonly services: Readonly<Record<"dashboard" | "ingest", pulumi.Output<string> | null>>;
   readonly jobs: Readonly<Record<string, pulumi.Output<string>>>;
   readonly schedulerJobs: readonly pulumi.Output<string>[];
@@ -493,6 +498,59 @@ export function defineInfra(cfg: InfraConfig, provider?: gcp.Provider, transform
       },
       opts,
     );
+  }
+
+  // ---- web のイメージの公開（web D-276。既定は無効: enableWebPush）。infra の provider は web を拒否したまま、web 専用の provider を足す。
+  //      受け付けるのは web の release.yml・main・環境 release の OIDC だけ。SA は Artifact Registry の jra-bot リポジトリの writer だけ（デプロイ・他の資源の権限は無い）
+  let webPush: { serviceAccount: pulumi.Output<string>; provider: pulumi.Output<string> } | null = null;
+  if (cfg.enableWebPush) {
+    const webWorkflowRef = `${cfg.githubRepoWeb}/.github/workflows/${WEB_RELEASE_WORKFLOW}@${WIF_REF}`;
+    const webProvider = new gcp.iam.WorkloadIdentityPoolProvider(
+      "github-web",
+      {
+        workloadIdentityPoolId: pool.workloadIdentityPoolId,
+        workloadIdentityPoolProviderId: "github-web-oidc",
+        displayName: "GitHub OIDC (web release)",
+        attributeMapping: {
+          "google.subject": "assertion.sub",
+          "attribute.repository": "assertion.repository",
+          "attribute.ref": "assertion.ref",
+          "attribute.workflow_ref": "assertion.workflow_ref",
+          "attribute.job_workflow_ref": "assertion.job_workflow_ref",
+          "attribute.environment": "assertion.environment",
+        },
+        attributeCondition:
+          `assertion.repository == "${cfg.githubRepoWeb}" && assertion.workflow_ref == "${webWorkflowRef}" && ` +
+          `assertion.ref == "${WIF_REF}" && assertion.environment == "${WEB_RELEASE_ENVIRONMENT}"`,
+        oidc: { issuerUri: "https://token.actions.githubusercontent.com" },
+      },
+      opts,
+    );
+    const pushSa = new gcp.serviceaccount.Account(
+      "sa-gha-web-push",
+      { accountId: "sa-gha-web-push", displayName: "web のイメージの公開（GitHub Actions。web の release.yml）" },
+      afterApis,
+    );
+    new gcp.serviceaccount.IAMMember(
+      "wif-web-push",
+      {
+        serviceAccountId: pushSa.name,
+        role: "roles/iam.workloadIdentityUser",
+        member: pulumi.interpolate`principalSet://iam.googleapis.com/${pool.name}/attribute.workflow_ref/${webWorkflowRef}`,
+      },
+      opts,
+    );
+    new gcp.artifactregistry.RepositoryIamMember(
+      "registry-writer-gha-web-push",
+      {
+        repository: registry.name,
+        location: region,
+        role: "roles/artifactregistry.writer",
+        member: pulumi.interpolate`serviceAccount:${pushSa.email}`,
+      },
+      opts,
+    );
+    webPush = { serviceAccount: pushSa.email, provider: webProvider.name };
   }
 
   // ---- Cloud SQL（cloudsql.tf）。DB ユーザーは作らない（パスワードを state に載せない: PULUMI_MIGRATION §3。ops db-users ensure）
@@ -926,6 +984,8 @@ export function defineInfra(cfg: InfraConfig, provider?: gcp.Provider, transform
     cloudSqlInstance: db.name,
     serviceAccounts: Object.fromEntries(Object.entries(sa).map(([k, v]) => [k, v.email])),
     wifProvider: wifProvider.name,
+    // web の Actions の変数 GCP_WIF_PROVIDER_WEB・GCP_PUSH_SERVICE_ACCOUNT に入れる値（enableWebPush のときだけ）
+    webPush,
     services: { dashboard: dashboardName, ingest: ingestName },
     jobs,
     schedulerJobs,
