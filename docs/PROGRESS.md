@@ -1,5 +1,10 @@
 # PROGRESS（jra-bot-infra）
-最終更新: 2026-11-06（backtest の Job・deploy の BOT_JOBS の修正。I-038）。旧: 2026-11-03（L6: Pulumi の定義・試験・ガード。旧: 2026-11-02 L3 同期: release-manifest v3。L2: ops を TypeScript へ。旧: 2026-11-01 第5段階のコード・workflow・Runbook）
+最終更新: 2026-11-07（低コスト化の 3 案の再見積り。I-040）。旧: 2026-11-06（backtest の Job・deploy の BOT_JOBS の修正。I-038）。旧: 2026-11-03（L6: Pulumi の定義・試験・ガード。旧: 2026-11-02 L3 同期: release-manifest v3。L2: ops を TypeScript へ。旧: 2026-11-01 第5段階のコード・workflow・Runbook）
+
+## 2026-11-07 低コスト化の 3 案の再見積り（ブランチ claude/serene-mayer-pxakgw。I-040。**文書のみ・適用なし**）
+- web の `docs/HOSTING_OPTIONS.md`（比較の正本）に合わせ、CLOUD_COSTS §11 に費用の要約。Cloudflare への構成変更は本人の指示で保留。進行中の変更の確認: infra の claude/l9-web-push（I-039。本人承認待ち）は push 済みのまま触っていない。
+- **検証**: 文書のみ。`terraform`・ops・Pulumi は変更なし（試験の再実行は不要）。
+- **次**: 本人の配置先の選択（web UNRESOLVED D-21）。
 
 ## 2026-11-06 backtest の Job（ブランチ claude/l8-backtest-job。I-038。**適用はしない**）
 - web の `--task=backtest`（CONTRACTS 0.4.18・D-265）に合わせ、Pulumi と Terraform に Cloud Run Job `backtest` を追加。deploy の `BOT_JOBS` に `export-dataset`（漏れていた既存の不具合）と `backtest` を追加し、Pulumi の試験で集合の一致を照合。
