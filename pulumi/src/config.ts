@@ -53,12 +53,13 @@ export const InfraConfig = z
     allowedUsers: z.array(email).default([]),
     adminUsers: z.array(email).default([]),
     tenantId: z.number().int().positive().default(1),
-    dbTier: z.string().min(1).default("db-g1-small"),
+    // 共有コアの最小（0.6 GiB）。費用の最小化（本人の選択: web D-278・HOSTING_OPTIONS 案 1）。MySQL 8.4 で選べるか・接続数は G-DB-1 で確認
+    dbTier: z.string().min(1).default("db-f1-micro"),
     dbVersion: z
       .string()
       .regex(/^MYSQL_[0-9_]+$/)
       .default("MYSQL_8_4"),
-    dbDiskSizeGb: z.number().int().min(10).default(20),
+    dbDiskSizeGb: z.number().int().min(10).default(10), // 作成時の大きさ（最小）。足りなければ自動拡張（上限 dbDiskAutoresizeLimitGb）。縮小できないので作成後は使わない（ignoreChanges）
     dbDiskAutoresizeLimitGb: z.number().int().min(10).default(50),
     maintenanceWindow: z
       .object({ day: z.number().int().min(1).max(7), hour: z.number().int().min(0).max(23) })
@@ -75,7 +76,7 @@ export const InfraConfig = z
       ),
     alertEmail: z.union([z.literal(""), email]).default(""),
     billingAccountId: z.union([z.literal(""), z.string().regex(/^[0-9A-F]{6}-[0-9A-F]{6}-[0-9A-F]{6}$/)]).default(""),
-    monthlyBudgetJpy: z.number().int().positive().default(12000),
+    monthlyBudgetJpy: z.number().int().positive().default(3000), // 本人の上限（web D-277・D-278）。超過の通知だけで、止めはしない
     schedulerResumeOnCreate: z.boolean().default(false),
     // web の release.yml がイメージを push する権限（web D-276）。CONTRACTS §1『push 権限は推測しない』ので既定は無効。本人の承認後に true
     enableWebPush: z.boolean().default(false),

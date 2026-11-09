@@ -112,7 +112,9 @@ describe("config (variables.tf と同じ検証)", () => {
   it("defaults and digest-only images", () => {
     const c = parseConfig(BASE);
     assert.equal(c.region, "asia-northeast1");
-    assert.equal(c.dbTier, "db-g1-small");
+    assert.equal(c.dbTier, "db-f1-micro");
+    assert.equal(c.dbDiskSizeGb, 10);
+    assert.equal(c.monthlyBudgetJpy, 3000);
     assert.equal(c.releaseImages, null);
     assert.throws(
       () => parseConfig({ ...DEPLOY, releaseImages: { ...DEPLOY.releaseImages, bot: "asia-northeast1-docker.pkg.dev/p/r/bot:latest" } }),
@@ -187,13 +189,14 @@ describe("base (deploy 無効。base.tftest.hcl)", () => {
     );
     assert.equal(pub[0]?.inputs["bucket"], "proj-1234-mode-beacon");
   });
-  it("Cloud SQL: no public IP, ENCRYPTED_ONLY, deletion protection, Enterprise db-g1-small", () => {
+  it("Cloud SQL: no public IP, ENCRYPTED_ONLY, deletion protection, Enterprise db-f1-micro, SSD 10 GB", () => {
     const s = rec(one(res, "gcp:sql/databaseInstance:DatabaseInstance", "db").inputs["settings"]);
     const ip = rec(s["ipConfiguration"]);
     assert.equal(ip["ipv4Enabled"], false);
     assert.equal(ip["sslMode"], "ENCRYPTED_ONLY");
     assert.equal(s["edition"], "ENTERPRISE");
-    assert.equal(s["tier"], "db-g1-small");
+    assert.equal(s["tier"], "db-f1-micro");
+    assert.equal(s["diskSize"], 10);
     assert.equal(s["deletionProtectionEnabled"], true);
     assert.equal(one(res, "gcp:sql/databaseInstance:DatabaseInstance", "db").inputs["deletionProtection"], true);
     assert.equal(s["activationPolicy"], "ALWAYS"); // 作成時だけ（以後は ignoreChanges）
@@ -444,7 +447,7 @@ describe("deploy (deploy.tftest.hcl)", () => {
   });
   it("values changed by ops and deploy are ignored (Pulumi never flips the running state back)", () => {
     // 期待値は定数ではなくリテラルで書く（定数どうしの比較では、無視の対象を外しても試験が通ってしまう: レビュー 中）
-    assert.deepEqual([...IGNORE.sqlInstance], ["settings.activationPolicy"]);
+    assert.deepEqual([...IGNORE.sqlInstance], ["settings.activationPolicy", "settings.diskSize"]);
     assert.deepEqual([...IGNORE.service], ["ingress", "client", "clientVersion", "template.containers[0].image", "template.revision"]);
     assert.deepEqual([...IGNORE.botJob], ["client", "clientVersion", "template.template.containers[0].image"]);
     assert.deepEqual(
@@ -465,6 +468,7 @@ describe("deploy (deploy.tftest.hcl)", () => {
     for (const n of ["scheduler-calendar-check", "scheduler-reconcile", "scheduler-retention"])
       assert.deepEqual(ig("gcp:cloudscheduler/job:Job", n), IGNORE.scheduler);
     assert.ok(IGNORE.sqlInstance.includes("settings.activationPolicy"));
+    assert.ok(IGNORE.sqlInstance.includes("settings.diskSize"));
     assert.ok(IGNORE.service.includes("ingress"));
     assert.ok(IGNORE.scheduler.includes("paused"));
   });

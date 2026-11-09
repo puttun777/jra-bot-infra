@@ -86,7 +86,7 @@ stateDiagram-v2
 ### 4.1 一覧
 | リソース | NORMAL 時 | STOPPED 時 | 操作コマンド（方針） | 停止中の課金 |
 |---|---|---|---|---|
-| Cloud SQL（Enterprise, db-g1-small, プライベート IP のみ） | `activation-policy=ALWAYS`（RUNNABLE） | `activation-policy=NEVER`（STOPPED） | `gcloud sql instances patch --activation-policy=…` + 状態ポーリング | ストレージ・バックアップ（公開 IP を持たないので IP 課金なし※要確認） |
+| Cloud SQL（Enterprise, db-f1-micro〔I-041。旧 db-g1-small〕, プライベート IP のみ） | `activation-policy=ALWAYS`（RUNNABLE） | `activation-policy=NEVER`（STOPPED） | `gcloud sql instances patch --activation-policy=…` + 状態ポーリング | ストレージ・バックアップ（公開 IP を持たないので IP 課金なし※要確認） |
 | Cloud Run `dashboard`（直接 IAP、min=0） | `ingress=all`、IAP 有効、許可リストは Terraform | `ingress=internal` | `gcloud run services update --ingress=…` | なし（スケールゼロ） |
 | Cloud Run `ingest`（min=0、アプリ認証） | `ingress=all` | `ingress=internal` | 同上 | なし |
 | Cloud Run Jobs `bot` / `calendar-check` / `reconcile` / `retention` / `db-migration` / `ml-train` / `export-dataset` / `backtest` | 定義のみ（実行は Scheduler/手動） | 実行中のものを排出→キャンセル | `gcloud run jobs executions list/cancel` | なし |

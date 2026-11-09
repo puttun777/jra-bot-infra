@@ -17,7 +17,7 @@
         │                                                          Cloud Run Jobs: calendar-check ─▶ bot-run
         │                          Direct VPC egress (プライベート範囲のみ)      reconcile / retention / db-migration
         │                                    ▼                              export-dataset / ml-train(Python)
-        │                       Cloud SQL for MySQL (Enterprise, db-g1-small, プライベートIPのみ)
+        │                       Cloud SQL for MySQL (Enterprise, db-f1-micro〔I-041〕, プライベートIPのみ)
         │                       GCS: ops-state(非公開・版管理) / model-store(非公開) / tfstate(非公開)
         │                       Secret Manager / Cloud Logging / Cloud Monitoring(最小)
 ```
@@ -29,7 +29,7 @@
 | **bot**（Cloud Run Job, **[T5.0] 同一イメージで `--task=bot-run|calendar-check|reconcile|retention|export-dataset|backtest`**。`backfill` は Job ではなく ingest の API〔バックフィル要求〕。ml-train の引数は `--tenant-id --dataset-id`〔I-H6〕） | bot-run: 1 vCPU/2 GiB、`max-retries=0`、タスクタイムアウト 14h（**G-OPS-5 で上限確認**）、並列 1。calendar-check: 0.5 vCPU/1 GiB、タイムアウト 5 分 | 必要時間帯のみ実行 |
 | **db-migration**（Job） | Flyway。`migrate` は deploy（NORMAL）時のみ、`info/validate` は start でも使用 | 起動時 migrate はしない（CONTRACTS §4） |
 | **ml-train**（Job, Python イメージ） | 2 vCPU/4 GiB、タイムアウト 1h、手動/Scheduler（初期 paused） | 常駐しない |
-| **Cloud SQL for MySQL** | **Enterprise エディション（明示指定）**、**db-g1-small**（共有コア 1.7 GB）、**MySQL 8.4 LTS を暫定基準**（9.7 は第2段階の互換検証ゲート後に再判断）、SSD 20 GB（自動拡張あり・上限 50 GB）、**プライベート IP のみ（公開 IP なし）**、自動バックアップ毎日・保持 7、PITR は初期オフ、HA なし、メンテナンス枠 = 火曜 03:00 JST 付近（開催の少ない曜日。G-OPS-3 で停止中の挙動を検証）、`deletion_protection=true` | §3 |
+| **Cloud SQL for MySQL** | **Enterprise エディション（明示指定）**、**db-f1-micro**（共有コア 0.6 GB。2026-11-09 に db-g1-small から変更: I-041。G-DB-1・P-3 で不足なら戻す）、SSD 10 GB、**MySQL 8.4 LTS を暫定基準**（9.7 は第2段階の互換検証ゲート後に再判断）、SSD 20 GB（自動拡張あり・上限 50 GB）、**プライベート IP のみ（公開 IP なし）**、自動バックアップ毎日・保持 7、PITR は初期オフ、HA なし、メンテナンス枠 = 火曜 03:00 JST 付近（開催の少ない曜日。G-OPS-3 で停止中の挙動を検証）、`deletion_protection=true` | §3 |
 | ネットワーク | 専用 VPC + サブネット（Direct VPC egress 用）、Cloud SQL はプライベートサービスアクセス。**Serverless VPC Access コネクタ・Cloud NAT・ロードバランサは使わない**（固定費ゼロ）。Direct VPC egress は「プライベート範囲のみ」→ Discord 等のインターネット宛はそのまま外部へ | VPC 固定費なし（要検証: G-NET-1） |
 | Cloud Scheduler | calendar-check（毎日 06:00〜19:00 の 15 分毎）、reconcile（月曜 14:30 以降の数回）、retention（月 1 回）、ml-train（paused） | ジョブ数 4（無料枠 3 を超える 1 ジョブ分 $0.10/月） |
 | GCS | `ops-state`（非公開・バージョニング）、`mode-beacon`（ビーコン 1 オブジェクトのみ公開読取）、`model-store`（非公開、datasets はライフサイクル 90 日）、`tfstate`（非公開・バージョニング） | 合計 1 GB 未満 |
@@ -42,10 +42,10 @@
 |---|---|---|
 | エディション | **Enterprise** を採用。Enterprise Plus は高性能・高可用（データキャッシュ、メンテナンスのほぼ無停止など）だが高額で、**共有コア（db-f1-micro / db-g1-small）は Enterprise のみ**。**MySQL 8.4 / 9.7 はエディション未指定だと Enterprise Plus が既定** → **必ず Enterprise を明示** | 公式ドキュメントの検索抜粋（choose-edition, create-instance） |
 | MySQL 版 | Cloud SQL では 8.0 / 8.4 / 9.7 が選択可（9.7 GA は 2026-08-13）。Flyway の公式「検証済み版」は 5.7 / 8.0 / 9.4（2025-01 時点の記載）で **8.4・9.7 は明記なし**。Connector/J 9.7.0（Boot BOM）、Doma の MySQL 方言は版非依存の想定 → **互換性が確認できていないため 8.4 LTS を暫定基準**（ユーザー方針）。9.7 は第2段階で Testcontainers（Flyway 13.11.1 + Connector/J 9.7.0 + Doma 3.14.1）で検証し、通れば再判断（web D-015 の更新が必要: 引継ぎ） | 検索抜粋 + VERSIONS |
-| マシン | **db-g1-small**（共有 vCPU、1.7 GB、ストレージ上限約 3 TB、SLA 対象外）を第一候補。**db-f1-micro（0.6 GB）は不採用**（MySQL 8.4 のメモリ要件・接続数で不足の恐れ。検証なしに採用しない）。8.4/9.7 での共有コア提供可否は**未確認**（G-DB-1）。不可の場合の代替は `db-custom-1-3840`（1 vCPU/3.75 GB, 推定 +¥4,800/月） | 料金ページ（Iowa 単価）+ 検索 |
-| 接続数 | db-g1-small の `max_connections` 既定は 1,000 との第三者記載（**未確認**）。**[T5.0] アプリの接続プール合計は 25（≤ 25。2026-11-06 に backtest 1 を追加: I-038）**（web CONTRACTS §8.3: dashboard 3×最大 2 インスタンス、ingest 3×2、bot-run 4、calendar-check/reconcile/retention 各 1、export-dataset 2、db-migration 2、ml-train 1。`DB_POOL_MAX` で上書き可。インスタンス数を増やしたら合計を再計算）→ 余裕あり | 第三者 |
+| マシン | **2026-11-09 変更: 既定を db-f1-micro（共有 vCPU・0.6 GB）にする**（本人が費用最小化の案 1 を選択: web D-278・HOSTING_OPTIONS）。当初は不採用としていた理由（MySQL 8.4 のメモリ・接続数の不足の恐れ）は残るため、**本番で使う前に G-DB-1（作成画面で選べるか・`max_connections`）と P-3（本人承認後の短時間の負荷試験）で確かめる**。不足なら設定 `dbTier`（Terraform は `db_tier`）を db-g1-small に戻す（コードの変更は不要）。旧: **db-g1-small**（共有 vCPU、1.7 GB、ストレージ上限約 3 TB、SLA 対象外）を第一候補。**db-f1-micro（0.6 GB）は不採用**（MySQL 8.4 のメモリ要件・接続数で不足の恐れ。検証なしに採用しない）。8.4/9.7 での共有コア提供可否は**未確認**（G-DB-1）。不可の場合の代替は `db-custom-1-3840`（1 vCPU/3.75 GB, 推定 +¥4,800/月） | 料金ページ（Iowa 単価）+ 検索 |
+| 接続数 | db-g1-small の `max_connections` 既定は 1,000 との第三者記載（**未確認**）。**既定の db-f1-micro の値も未確認**（G-DB-1。合計 25 を受けられなければプール上限を下げるか db-g1-small に戻す）。**[T5.0] アプリの接続プール合計は 25（≤ 25。2026-11-06 に backtest 1 を追加: I-038）**（web CONTRACTS §8.3: dashboard 3×最大 2 インスタンス、ingest 3×2、bot-run 4、calendar-check/reconcile/retention 各 1、export-dataset 2、db-migration 2、ml-train 1。`DB_POOL_MAX` で上書き可。インスタンス数を増やしたら合計を再計算）→ 余裕あり | 第三者 |
 | 性能 | 共有 CPU のバースト。想定負荷（オッズ書込: 1 サイクル数十行、ダッシュボード 2 名）では十分の見込み。第2段階で負荷試験（G-DB-4） | 推定 |
-| ストレージ | SSD（HDD は月数百円安いが書込性能が低い）。20 GB から開始・自動拡張は上限 50 GB（費用の暴走防止） | 料金ページ |
+| ストレージ | SSD（HDD は月数百円安いが書込性能が低い）。**10 GB から開始**（2026-11-09。旧 20 GB。データは 3 年で 5〜10 GB の見込み）。**ディスクは縮小できない**: 自動拡張した後や、既に大きく作ったインスタンスには小さい値を適用しない（IaC は作成後の大きさの差分を無視する: I-041）・自動拡張は上限 50 GB（費用の暴走防止） | 料金ページ |
 | 停止・復帰 | `activation-policy=NEVER` で停止（**手動で開始するまで停止のまま**: 公式記述の抜粋）、`ALWAYS` で起動。**停止中もストレージと IP の課金は継続**（公開 IP を持たない設計。プライベート IP の課金有無は G-OPS-2） | 公式抜粋 |
 | メンテナンス | 停止中のインスタンスがメンテナンスで起動するかは**公式記述を確認できず**（G-OPS-3）。起動中のメンテナンスは短時間の再起動を伴う → 開催日の監視時間帯を避けた枠に設定 | 未確認 |
 | バックアップ・復旧 | 自動バックアップ（毎日・7 世代）＋ 重要操作前（migration、stop 時の任意）にオンデマンド。PITR はバイナリログで容量と書込負荷が増えるため初期オフ（データ損失許容 = 最大 1 日。bot の取込は JV-Link から再取得可能＝JVLINK_DESIGN §6）。リストアは別インスタンスへの復元で手順化（第5段階） | 設計 |

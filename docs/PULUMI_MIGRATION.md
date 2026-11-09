@@ -18,7 +18,7 @@
 | `google_secret_manager_secret.secret[*]`・`_iam_member` | `gcp.secretmanager.Secret`・`SecretIamMember` | **値は管理しない**（版は本人が gcloud で入れる） |
 | `google_project_iam_custom_role.*`・`google_project_iam_member.*`・`google_service_account_iam_member.*` | `gcp.projects.IAMCustomRole`・`IAMMember`・`gcp.serviceaccount.IAMMember` | 権限の一覧は同じ。setIamPolicy 系・run.jobs.run を含めない（試験） |
 | `google_iam_workload_identity_pool(_provider).github` | `gcp.iam.WorkloadIdentityPool`・`WorkloadIdentityPoolProvider` | attribute_condition は infra リポジトリだけ。ワークフローと ref（main）で束縛 |
-| `google_sql_database_instance.main`・`google_sql_database.jrabot` | `gcp.sql.DatabaseInstance`・`gcp.sql.Database` | `ignoreChanges: ["settings.activationPolicy"]`（起動/停止は ops だけ） |
+| `google_sql_database_instance.main`・`google_sql_database.jrabot` | `gcp.sql.DatabaseInstance`・`gcp.sql.Database` | `ignoreChanges: ["settings.activationPolicy", "settings.diskSize"]`（diskSize は I-041: 自動拡張後の縮小差分を防ぐ）（起動/停止は ops だけ） |
 | `google_sql_user.db[*]`（`password_wo` + ephemeral） | **Pulumi では管理しない**（§3） | state に秘密を載せないため |
 | `google_cloud_run_v2_service.dashboard/ingest`・`_iam_member`・IAP | `gcp.cloudrunv2.Service`・`ServiceIamMember`・`gcp.iap.WebCloudRunServiceIamMember` | `ignoreChanges`: ingress・client・clientVersion・イメージ・revision（ops・deploy が変更する値） |
 | `google_cloud_run_v2_job.*`・`_iam_member` | `gcp.cloudrunv2.Job`・`JobIamMember` | `ignoreChanges`: client・clientVersion・イメージ（db-migration・ml-train は args も） |
