@@ -17,6 +17,8 @@ export const buckets = out.buckets;
 export const cloud_sql_instance = out.cloudSqlInstance;
 export const service_accounts = out.serviceAccounts;
 export const wif_provider = out.wifProvider;
+// web の Actions の変数（GCP_WIF_PROVIDER_WEB・GCP_PUSH_SERVICE_ACCOUNT）に入れる値。enableWebPush のときだけ（web D-276）
+export const web_push = out.webPush;
 export const services = out.services;
 export const jobs = out.jobs;
 export const scheduler_jobs = out.schedulerJobs;

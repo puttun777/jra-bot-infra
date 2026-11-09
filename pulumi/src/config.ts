@@ -77,6 +77,8 @@ export const InfraConfig = z
     billingAccountId: z.union([z.literal(""), z.string().regex(/^[0-9A-F]{6}-[0-9A-F]{6}-[0-9A-F]{6}$/)]).default(""),
     monthlyBudgetJpy: z.number().int().positive().default(12000),
     schedulerResumeOnCreate: z.boolean().default(false),
+    // web の release.yml がイメージを push する権限（web D-276）。CONTRACTS §1『push 権限は推測しない』ので既定は無効。本人の承認後に true
+    enableWebPush: z.boolean().default(false),
   })
   .strict()
   // variables.tf の admin_users の検証と同じ: 管理者は許可リストの中から（レビュー 中）
@@ -108,7 +110,7 @@ const STRING_KEYS = [
   "billingAccountId",
 ] as const;
 const NUMBER_KEYS = ["tenantId", "dbDiskSizeGb", "dbDiskAutoresizeLimitGb", "monthlyBudgetJpy"] as const;
-const BOOLEAN_KEYS = ["schedulerResumeOnCreate"] as const;
+const BOOLEAN_KEYS = ["schedulerResumeOnCreate", "enableWebPush"] as const;
 const JSON_KEYS = ["allowedUsers", "adminUsers", "maintenanceWindow", "releaseImages", "appRuntime"] as const;
 
 /**
