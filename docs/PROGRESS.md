@@ -1,5 +1,10 @@
 # PROGRESS（jra-bot-infra）
-最終更新: 2026-11-06（backtest の Job・deploy の BOT_JOBS の修正。I-038）。旧: 2026-11-03（L6: Pulumi の定義・試験・ガード。旧: 2026-11-02 L3 同期: release-manifest v3。L2: ops を TypeScript へ。旧: 2026-11-01 第5段階のコード・workflow・Runbook）
+最終更新: 2026-11-07（web のイメージの公開の権限。I-039。本人の承認待ち）。旧: 2026-11-06（backtest の Job・deploy の BOT_JOBS の修正。I-038）。旧: 2026-11-03（L6: Pulumi の定義・試験・ガード。旧: 2026-11-02 L3 同期: release-manifest v3。L2: ops を TypeScript へ。旧: 2026-11-01 第5段階のコード・workflow・Runbook）
+
+## 2026-11-07 web のイメージの公開の権限（ブランチ claude/l9-web-push。I-039。**本人の承認待ち・マージしない・適用しない**）
+- web の `release.yml`（web D-276）が Artifact Registry へ push するための、web 専用の WIF provider と `sa-gha-web-push`（registry の writer だけ）を Pulumi に定義した。設定 `enableWebPush` が既定で false なので、マージしても up しても作られない。
+- **検証（ローカル。Node 24.22.2）**: lint、ops 140 件・pulumi 30 件（skip 0）。**未実施**: `pulumi preview`（GCP 認証・Pulumi CLI が無い）。Terraform は変更なし。
+- **次**: 本人が CONTRACTS §1 の付与を承認したらマージ → `enableWebPush: true` で preview → up → 出力 `web_push` を web の変数へ（web USER_ACTIONS B4b）。
 
 ## 2026-11-06 backtest の Job（ブランチ claude/l8-backtest-job。I-038。**適用はしない**）
 - web の `--task=backtest`（CONTRACTS 0.4.18・D-265）に合わせ、Pulumi と Terraform に Cloud Run Job `backtest` を追加。deploy の `BOT_JOBS` に `export-dataset`（漏れていた既存の不具合）と `backtest` を追加し、Pulumi の試験で集合の一致を照合。
