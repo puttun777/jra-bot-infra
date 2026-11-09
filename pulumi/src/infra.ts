@@ -222,7 +222,8 @@ export const SCHEDULER_JOBS: Readonly<Record<string, { schedule: string; job: st
 
 /** ops・deploy が変更する値（Pulumi は戻さない）。試験がこの一覧と各資源の設定を照合する。 */
 export const IGNORE = {
-  sqlInstance: ["settings.activationPolicy"],
+  // diskSize: 自動拡張で実際の大きさが設定値を超えると、設定値への縮小（作り直し）を求める差分になるため無視する（I-041。Cloud SQL のディスクは縮小できない）
+  sqlInstance: ["settings.activationPolicy", "settings.diskSize"],
   service: ["ingress", "client", "clientVersion", "template.containers[0].image", "template.revision"],
   botJob: ["client", "clientVersion", "template.template.containers[0].image"],
   argJob: ["client", "clientVersion", "template.template.containers[0].image", "template.template.containers[0].args"],

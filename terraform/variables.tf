@@ -60,8 +60,9 @@ variable "tenant_id" {
 }
 
 variable "db_tier" {
-  type    = string
-  default = "db-g1-small"
+  description = "共有コアの最小（0.6 GiB）。費用の最小化（web D-278）。MySQL 8.4 で選べるか・接続数は G-DB-1 で確認"
+  type        = string
+  default     = "db-f1-micro"
 }
 
 variable "db_version" {
@@ -71,8 +72,9 @@ variable "db_version" {
 }
 
 variable "db_disk_size_gb" {
-  type    = number
-  default = 20
+  description = "作成時の大きさ。最小の 10 GB。足りなければ自動拡張（上限 db_disk_autoresize_limit_gb）。作成後は縮小できないので、この値は作成時だけ使う（ignore_changes）"
+  type        = number
+  default     = 10
 }
 
 variable "db_disk_autoresize_limit_gb" {
@@ -142,8 +144,9 @@ variable "billing_account_id" {
 }
 
 variable "monthly_budget_jpy" {
-  type    = number
-  default = 12000
+  description = "本人の上限（web D-277）。超過の通知だけで、止めはしない"
+  type        = number
+  default     = 3000
 }
 
 variable "scheduler_resume_on_create" {

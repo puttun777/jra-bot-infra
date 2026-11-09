@@ -44,8 +44,8 @@ run "database_is_private_and_not_controlled_by_terraform" {
     error_message = "Cloud SQL に公開 IP を付けない"
   }
   assert {
-    condition     = google_sql_database_instance.main.settings[0].edition == "ENTERPRISE" && google_sql_database_instance.main.settings[0].tier == "db-g1-small"
-    error_message = "Enterprise + db-g1-small"
+    condition     = google_sql_database_instance.main.settings[0].edition == "ENTERPRISE" && google_sql_database_instance.main.settings[0].tier == "db-f1-micro" && google_sql_database_instance.main.settings[0].disk_size == 10
+    error_message = "Enterprise + db-f1-micro + SSD 10 GB"
   }
   assert {
     condition     = google_sql_database_instance.main.deletion_protection == true && google_sql_database_instance.main.settings[0].deletion_protection_enabled == true

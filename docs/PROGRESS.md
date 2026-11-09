@@ -1,5 +1,17 @@
 # PROGRESS（jra-bot-infra）
-最終更新: 2026-11-07（web のイメージの公開の権限。I-039。本人の承認待ち）。旧: 2026-11-06（backtest の Job・deploy の BOT_JOBS の修正。I-038）。旧: 2026-11-03（L6: Pulumi の定義・試験・ガード。旧: 2026-11-02 L3 同期: release-manifest v3。L2: ops を TypeScript へ。旧: 2026-11-01 第5段階のコード・workflow・Runbook）
+最終更新: 2026-11-09（案 1 の最小化を IaC に反映。I-041）。旧: 2026-11-07（低コスト化の 3 案の再見積り。I-040）。旧: 2026-11-07（web のイメージの公開の権限。I-039。本人の承認待ち）。旧: 2026-11-06（backtest の Job・deploy の BOT_JOBS の修正。I-038）。旧: 2026-11-03（L6: Pulumi の定義・試験・ガード。旧: 2026-11-02 L3 同期: release-manifest v3。L2: ops を TypeScript へ。旧: 2026-11-01 第5段階のコード・workflow・Runbook）
+
+## 2026-11-09 案 1 の最小化を IaC に反映（ブランチ claude/serene-mayer-pxakgw。I-041。**適用はしない**）
+- 本人が案 1（Cloud Run + Cloud SQL の最小化）を選択（web D-278）。Pulumi・Terraform の既定: Cloud SQL db-f1-micro・SSD 10 GB・予算の通知 3,000 円。試験の期待値を更新。ARCHITECTURE §3・OPERATIONS_DESIGN・PULUMI_MIGRATION。作成後のディスクの大きさの差分は無視（縮小できないため。自動拡張の後も含む）。予算 3,000 円は 1a・現行 bot-run だと毎月通知が出る見込み（I-041）。
+- **独立レビュー（Sonnet・High・読取り専用）**: 高 0・中 3・低 4 → 中 3 と低を反映。
+- 本ブランチは main（PR #13 のマージ後）へ rebase した（DECISIONS・PROGRESS の衝突は両方を残して解消）。
+- **検証（ローカル。Node 22.23.4〔このセッションの版。CI は 24〕）**: `npm ci --ignore-scripts`・lint、ops 140 件・pulumi 30 件（skip 0）、`terraform fmt -check`（1.17.1。SHA256SUMS で検証して展開）。**未実施**: `terraform init/validate/test`（registry に接続できない。CI で確認）、`pulumi preview`（GCP の認証なし）。
+- **本人の承認が必要**: apply / pulumi up。前に G-DB-1（作成画面で db-f1-micro を MySQL 8.4 で選べるか・`max_connections`。課金なし）。
+
+## 2026-11-07 低コスト化の 3 案の再見積り（ブランチ claude/serene-mayer-pxakgw。I-040。**文書のみ・適用なし**）
+- web の `docs/HOSTING_OPTIONS.md`（比較の正本）に合わせ、CLOUD_COSTS §11 に費用の要約。Cloudflare への構成変更は本人の指示で保留。進行中の変更の確認: infra の claude/l9-web-push（I-039。本人承認待ち）は push 済みのまま触っていない。
+- **検証**: 文書のみ。`terraform`・ops・Pulumi は変更なし（試験の再実行は不要）。
+- **次**: 本人の配置先の選択（web UNRESOLVED D-21）。
 
 ## 2026-11-07 web のイメージの公開の権限（ブランチ claude/l9-web-push。I-039。**本人の承認待ち・マージしない・適用しない**）
 - web の `release.yml`（web D-276）が Artifact Registry へ push するための、web 専用の WIF provider と `sa-gha-web-push`（registry の writer だけ）を Pulumi に定義した。設定 `enableWebPush` が既定で false なので、マージしても up しても作られない。
