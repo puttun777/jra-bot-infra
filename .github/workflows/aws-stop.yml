@@ -1,0 +1,46 @@
+name: aws-stop
+# AWS: 停止。view-end は「閲覧の終了」（開催日・batch の起動は止めない）。stop-all は全ての起動目的を外して止める（今日の開催日も再起動しない）。
+# 止めるのは制御（Lambda）: 受付の停止 → 実行中の処理の安全な終了 → バックアップ → EC2 の停止。データは消さない。設計: docs/AWS_OPERATIONS.md §4。
+on:
+  workflow_dispatch:
+    inputs:
+      scope:
+        description: view-end = 閲覧だけ終える / stop-all = すべて止める
+        type: choice
+        options: ["view-end", "stop-all"]
+        default: "view-end"
+      reason:
+        description: 理由（stop-all のとき必須）
+        required: false
+        default: ""
+permissions:
+  contents: read
+  id-token: write
+defaults:
+  run:
+    shell: bash
+jobs:
+  stop:
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    environment: ops
+    env:
+      AWS_ROLE_ARN: ${{ vars.AWS_OPS_ROLE_ARN }}
+      CONTROLLER_FUNCTION: ${{ vars.AWS_CONTROLLER_FUNCTION }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: ./.github/actions/setup-ops
+      - name: 停止の要求
+        working-directory: ops
+        env:
+          SCOPE: ${{ inputs.scope }}
+          REASON: ${{ inputs.reason }}
+        run: |
+          case "$SCOPE" in
+            view-end) node ../build/ops/src/aws/cli.js view-end | tee -a "$GITHUB_STEP_SUMMARY" ;;
+            stop-all) node ../build/ops/src/aws/cli.js stop-all --reason "$REASON" | tee -a "$GITHUB_STEP_SUMMARY" ;;
+            *) echo "::error::scope が不正"; exit 2 ;;
+          esac

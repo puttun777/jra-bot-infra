@@ -1,0 +1,60 @@
+name: aws-raceday
+# AWS: 開催日の予定の手動の調整。通常は不要（アプリが JRA の開催予定から計画し、制御が自動で起動・停止する）。
+#   add  = 予定に無い開催日を足す（発走時刻は UTC。省略時は既定の時刻）
+#   skip = その日は起動しない（中止・本人の都合）
+on:
+  workflow_dispatch:
+    inputs:
+      action:
+        description: add または skip
+        type: choice
+        options: ["add", "skip"]
+      date:
+        description: 開催日（YYYY-MM-DD。日本時間の日付）
+        required: true
+      first_post:
+        description: 最初の発走（UTC の YYYY-MM-DDTHH:MM:SSZ。add のときだけ・省略可）
+        required: false
+        default: ""
+      last_post:
+        description: 最後の発走（UTC。add のときだけ・省略可）
+        required: false
+        default: ""
+      reason:
+        description: 理由（skip のとき必須）
+        required: false
+        default: ""
+permissions:
+  contents: read
+  id-token: write
+defaults:
+  run:
+    shell: bash
+jobs:
+  raceday:
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    environment: ops
+    env:
+      AWS_ROLE_ARN: ${{ vars.AWS_OPS_ROLE_ARN }}
+      CONTROLLER_FUNCTION: ${{ vars.AWS_CONTROLLER_FUNCTION }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: ./.github/actions/setup-ops
+      - name: 開催日の調整
+        working-directory: ops
+        env:
+          ACTION: ${{ inputs.action }}
+          DATE: ${{ inputs.date }}
+          FIRST: ${{ inputs.first_post }}
+          LAST: ${{ inputs.last_post }}
+          REASON: ${{ inputs.reason }}
+        run: |
+          case "$ACTION" in
+            add) node ../build/ops/src/aws/cli.js raceday-add --date "$DATE" --first-post "$FIRST" --last-post "$LAST" | tee -a "$GITHUB_STEP_SUMMARY" ;;
+            skip) node ../build/ops/src/aws/cli.js raceday-skip --date "$DATE" --reason "$REASON" | tee -a "$GITHUB_STEP_SUMMARY" ;;
+            *) echo "::error::action が不正"; exit 2 ;;
+          esac

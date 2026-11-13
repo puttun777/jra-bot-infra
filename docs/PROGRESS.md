@@ -1,5 +1,11 @@
 # PROGRESS（jra-bot-infra）
-最終更新: 2026-11-09（案 1 の最小化を IaC に反映。I-041）。旧: 2026-11-07（低コスト化の 3 案の再見積り。I-040）。旧: 2026-11-07（web のイメージの公開の権限。I-039。本人の承認待ち）。旧: 2026-11-06（backtest の Job・deploy の BOT_JOBS の修正。I-038）。旧: 2026-11-03（L6: Pulumi の定義・試験・ガード。旧: 2026-11-02 L3 同期: release-manifest v3。L2: ops を TypeScript へ。旧: 2026-11-01 第5段階のコード・workflow・Runbook）
+最終更新: 2026-11-13（GCP → AWS の移行の設計・実装。I-042〜I-047。適用なし）。旧: 2026-11-09（案 1 の最小化を IaC に反映。I-041）。旧: 2026-11-07（低コスト化の 3 案の再見積り。I-040）。旧: 2026-11-07（web のイメージの公開の権限。I-039。本人の承認待ち）。旧: 2026-11-06（backtest の Job・deploy の BOT_JOBS の修正。I-038）。旧: 2026-11-03（L6: Pulumi の定義・試験・ガード。旧: 2026-11-02 L3 同期: release-manifest v3。L2: ops を TypeScript へ。旧: 2026-11-01 第5段階のコード・workflow・Runbook）
+
+## 2026-11-13 GCP → AWS の移行（ブランチ claude/jra-bot-gcp-to-aws-uqla8y。I-042〜I-047。web D-280〜D-287。**AWS には何も作っていない・適用しない**）
+- **追加**: `pulumi-aws/`（VPC・SG 443/80・EC2 t4g.small・データ用 EBS〔protect・retainOnDelete〕・DLM・S3 4 本・ECR 5・Cognito Lite・Route 53・Lambda・Scheduler・GitHub OIDC のロール・Budgets。zod の設定・user data・mock 試験 12 件）、`ops/src/aws/`（`controller.ts` 状態機械・`lambda.ts`・`host.ts`〔純粋〕・`hostctl.ts`〔運用エージェント〕・`services.ts`・`cli.ts`）、`ops/bundle-aws.mjs`（esbuild）、`ops/it/backup-restore.mjs`、workflow `aws-view`・`aws-status`・`aws-stop`・`aws-raceday`・`aws-batch`・`aws-backup`・`aws-deploy`・`aws-secrets-init`、CI のジョブ `aws-backup-restore` と ops-tests への bundle・pulumi-aws の試験。文書 `AWS_ARCHITECTURE.md`・`AWS_OPERATIONS.md`・CLOUD_COSTS §12。`schemas/release-manifest.v3.json` を web 0.4.19 に同期。
+- **検証（ローカル。Node 24.22.2・Docker 29.9.2）**: lint（biome）、ops 183 件・pulumi 30 件・pulumi-aws 12 件（skip 0）、バックアップ・復元の結合試験（合成 5 表・Flyway の実スキーマ 38 表 + 合成データ。チェックサム一致）、Docker の網（subnet・ip-range・固定 IP）と iptables の規則の書式。**未実施**（実環境が必要。`AWS_OPERATIONS.md` §11）: pulumi preview/up、Lambda・EC2・Cognito・Let's Encrypt・Route 53・SSM・ECR の実動作、arm64 の実機、Windows エージェントの接続、実データの移行。`terraform` は変更なし。
+- **本人の承認が必要**: `pulumi up`（課金リソースの作成）、`enableWebPush`（IAM）、実データの投入（COMP-4 の後）、GCP の停止・削除、ドメイン。用意するもの: `AWS_OPERATIONS.md` §0（U1〜U12）。
+- **次**: 独立レビュー → 修正 → PR → CI。その後、本人の承認を得て §1 の初回の構築。
 
 ## 2026-11-09 案 1 の最小化を IaC に反映（ブランチ claude/serene-mayer-pxakgw。I-041。**適用はしない**）
 - 本人が案 1（Cloud Run + Cloud SQL の最小化）を選択（web D-278）。Pulumi・Terraform の既定: Cloud SQL db-f1-micro・SSD 10 GB・予算の通知 3,000 円。試験の期待値を更新。ARCHITECTURE §3・OPERATIONS_DESIGN・PULUMI_MIGRATION。作成後のディスクの大きさの差分は無視（縮小できないため。自動拡張の後も含む）。予算 3,000 円は 1a・現行 bot-run だと毎月通知が出る見込み（I-041）。

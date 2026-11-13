@@ -1,0 +1,53 @@
+name: aws-deploy
+# AWS: イメージの更新。入力は web の release-manifest.json（AWS 向け: ECR・runtime.arch）だけ。取得 → SHA-256 → スキーマ・契約・CPU の確認 →
+# control/release-candidate.json → 保守の起動 → ホストでバックアップ → migrate → 入れ替え（成功したときだけ正式な版に昇格。失敗したら前の版）。
+# 開催日の処理の最中は拒否する。設計: docs/AWS_OPERATIONS.md §6。
+on:
+  workflow_dispatch:
+    inputs:
+      manifest_url:
+        description: release-manifest.json の URL（web のリリース資産。https のみ）
+        required: true
+      manifest_sha256:
+        description: manifest の SHA-256（web のリリースに記載）
+        required: true
+permissions:
+  contents: read
+  id-token: write
+concurrency:
+  group: ops-aws-host
+  cancel-in-progress: false
+defaults:
+  run:
+    shell: bash
+jobs:
+  deploy:
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    environment: ops
+    env:
+      AWS_ROLE_ARN: ${{ vars.AWS_OPS_ROLE_ARN }}
+      CONTROLLER_FUNCTION: ${{ vars.AWS_CONTROLLER_FUNCTION }}
+      INSTANCE_ID: ${{ vars.AWS_INSTANCE_ID }}
+      STATE_BUCKET: ${{ vars.AWS_STATE_BUCKET }}
+      HOST_IMAGES: ${{ vars.AWS_HOST_IMAGES }}
+      ARCH: ${{ vars.AWS_ARCH }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: ./.github/actions/setup-ops
+      - name: manifest の取得とハッシュ確認
+        env:
+          URL: ${{ inputs.manifest_url }}
+          SHA: ${{ inputs.manifest_sha256 }}
+        run: |
+          case "$URL" in https://github.com/*/jra-bot-web/releases/download/*/release-manifest.json) ;; *) echo "::error::web の GitHub Release の release-manifest.json だけ"; exit 2;; esac
+          case "$SHA" in *[!0-9a-f]*|"") echo "::error::SHA-256 は 16 進"; exit 2;; esac
+          [ "${#SHA}" -eq 64 ] || { echo "::error::SHA-256 は 64 桁"; exit 2; }
+          curl -fsSL --max-time 60 -o "$RUNNER_TEMP/release-manifest.json" "$URL"
+          echo "${SHA}  $RUNNER_TEMP/release-manifest.json" | sha256sum -c -
+      - name: deploy
+        working-directory: ops
+        run: node ../build/ops/src/aws/cli.js deploy --manifest "$RUNNER_TEMP/release-manifest.json" --schema ../schemas/release-manifest.v3.json --arch "${ARCH:-arm64}" | tee -a "$GITHUB_STEP_SUMMARY"

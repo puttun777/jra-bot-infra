@@ -1,0 +1,43 @@
+name: aws-view
+# AWS: 閲覧用の起動・延長（スマホの GitHub からも実行できる）。bot・Discord の通知・重い処理は始めない（workloads.raceday=false）。
+# 同じ workflow をもう一度実行すると、閲覧の期限を「今から N 分」に延ばす（短くはしない）。設計: docs/AWS_OPERATIONS.md §2。
+on:
+  workflow_dispatch:
+    inputs:
+      minutes:
+        description: 自動停止までの分（延長も同じ）
+        type: choice
+        options: ["60", "30", "120", "180", "240"]
+        default: "60"
+      wait:
+        description: 準備完了（ログインできる状態）まで待って接続先を表示する
+        type: boolean
+        default: true
+permissions:
+  contents: read
+  id-token: write
+defaults:
+  run:
+    shell: bash
+jobs:
+  view:
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    environment: ops
+    env:
+      AWS_ROLE_ARN: ${{ vars.AWS_OPS_ROLE_ARN }}
+      CONTROLLER_FUNCTION: ${{ vars.AWS_CONTROLLER_FUNCTION }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: ./.github/actions/setup-ops
+      - name: 閲覧の起動（受付 → 準備完了の確認）
+        working-directory: ops
+        env:
+          MINUTES: ${{ inputs.minutes }}
+        run: |
+          args=(view --minutes "$MINUTES")
+          [ "${{ inputs.wait }}" = true ] && args+=(--wait)
+          node ../build/ops/src/aws/cli.js "${args[@]}" | tee -a "$GITHUB_STEP_SUMMARY"

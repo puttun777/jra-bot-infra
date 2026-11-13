@@ -1,0 +1,27 @@
+name: aws-status
+# AWS: 状態の確認（EC2・アプリの準備・起動目的・bot・自動停止の予定・最後の停止とバックアップ）。停止中でも使える。何も変更しない。
+on:
+  workflow_dispatch:
+permissions:
+  contents: read
+  id-token: write
+defaults:
+  run:
+    shell: bash
+jobs:
+  status:
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    environment: ops
+    env:
+      AWS_ROLE_ARN: ${{ vars.AWS_OPS_ROLE_ARN }}
+      CONTROLLER_FUNCTION: ${{ vars.AWS_CONTROLLER_FUNCTION }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: ./.github/actions/setup-ops
+      - name: status
+        working-directory: ops
+        run: node ../build/ops/src/aws/cli.js status | tee -a "$GITHUB_STEP_SUMMARY"

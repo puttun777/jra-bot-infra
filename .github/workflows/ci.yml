@@ -25,6 +25,23 @@ jobs:
         run: node ops/run-tests.mjs
       - name: Pulumi の定義の mock 試験（資源は作らない。実 GCP の preview ではない。件数・skip を JUnit XML で検査）
         run: node pulumi/run-tests.mjs
+      - name: AWS の Lambda・ホストの運用エージェントの成果物（esbuild。SHA-256 を添える）
+        run: npm run --silent bundle:aws
+      - name: Pulumi（AWS）の定義の mock 試験（資源は作らない。実 AWS の preview ではない。件数・skip を JUnit XML で検査）
+        run: node pulumi-aws/run-tests.mjs
+  aws-backup-restore:
+    # MySQL のバックアップ（hostctl と同じ mysqldump の引数）→ 別の MySQL への復元 → 全表のチェックサムの一致。合成データだけ（実データ・実 AWS なし）
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: ./.github/actions/setup-ops
+      - name: バックアップ・復元の結合試験
+        env:
+          MYSQL_IMAGE: mysql:8.4.11@sha256:0f51e63e537a1f176423fa03ef559aabe6fa4372a53160a44bc7e75da7d15364
+        run: node ops/it/backup-restore.mjs
   terraform:
     runs-on: ubuntu-latest
     steps:
@@ -42,11 +59,11 @@ jobs:
           if git ls-files | grep -E '\.(tfstate|tfvars)(\.|$)|\.tfstate\.backup$|(^|/)\.terraform/'; then echo "::error::tfstate/tfvars/.terraform が追跡されている"; exit 1; fi
   ci-gate:
     name: ci gate
-    needs: [ops-tests, terraform]
+    needs: [ops-tests, terraform, aws-backup-restore]
     if: always()
     runs-on: ubuntu-latest
     steps:
       - name: 必要なジョブがすべて success であること（skipped を成功扱いにしない）
         run: |
           echo '${{ toJSON(needs) }}'
-          [ "${{ needs.ops-tests.result }}" = success ] && [ "${{ needs.terraform.result }}" = success ]
+          [ "${{ needs.ops-tests.result }}" = success ] && [ "${{ needs.terraform.result }}" = success ] && [ "${{ needs.aws-backup-restore.result }}" = success ]
