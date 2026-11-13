@@ -98,6 +98,15 @@ export async function runController(
     const changed = current === undefined || !canonicalEqual(state, committed);
     if (changed) {
       committed = S.bump(committed) as AwsOpsState;
+      // 書く前に検査する（上限を超えた状態を書くと、以後の実行がすべて読めずに失敗し、自動停止も止まる）
+      const valid = AwsOpsStateSchema.safeParse(committed);
+      if (!valid.success)
+        return {
+          ok: false,
+          message: `運用状態の検査に失敗したので書かない: ${valid.error.issues[0]?.path.join(".") ?? "?"}`,
+          summary: summarize(state, host, instance, nowIso, siteUrl),
+          errors,
+        };
       if (effects.beacon !== undefined && committed.beacon !== null && committed.beacon !== undefined) committed.beacon.seq = committed.seq;
       try {
         await ports.writeState(committed, current?.etag);

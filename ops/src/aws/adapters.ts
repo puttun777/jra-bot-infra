@@ -126,9 +126,12 @@ export async function secureParameter(ssm: SSMClient, name: string): Promise<str
   }
 }
 
-/** Discord の運用通知（任意。宛先は SSM の SecureString。URL・応答の本文はログに出さない）。失敗しても例外にしない。 */
-export async function notifyDiscord(webhook: string | undefined, title: string, body: string): Promise<boolean> {
-  if (webhook === undefined || !/^https:\/\/(discord\.com|discordapp\.com)\/api\/webhooks\/\d+\/[\w-]+$/.test(webhook)) return false;
+/** Discord の運用通知（宛先は SSM の SecureString。URL・応答の本文はログに出さない）。未設定・失敗は例外（呼び出し側が errors に記録する）。 */
+export async function notifyDiscord(webhook: string | undefined, title: string, body: string): Promise<void> {
+  if (webhook === undefined) throw new Error("通知の Webhook が未設定");
+  if (!/^https:\/\/(discord\.com|discordapp\.com)\/api\/webhooks\/\d+\/[\w-]+$/.test(webhook))
+    throw new Error("通知の Webhook の形式が不正");
+  let status: number;
   try {
     const r = await fetch(webhook, {
       method: "POST",
@@ -137,10 +140,11 @@ export async function notifyDiscord(webhook: string | undefined, title: string, 
       signal: AbortSignal.timeout(10_000),
       redirect: "error",
     });
-    return r.status >= 200 && r.status < 300;
+    status = r.status;
   } catch {
-    return false;
+    throw new Error("通知の送信が失敗（通信）");
   }
+  if (status < 200 || status >= 300) throw new Error(`通知の送信が失敗（HTTP ${status}）`);
 }
 
 export const clients = {

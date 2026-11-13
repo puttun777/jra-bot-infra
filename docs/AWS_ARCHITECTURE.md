@@ -40,7 +40,8 @@
 | 管理の経路 | SSM Run Command（GitHub Actions から）・SSM Session Manager | SSH・鍵・22 番を使わない |
 | デプロイ | GitHub Actions の OIDC → IAM ロール | 長期キーを持たない |
 | ログ | コンテナは json-file（10 MB×3）、Lambda は CloudWatch Logs（14 日） | Cloud Logging の置換え。ホストのログを CloudWatch に送らない（費用） |
-| 予算 | AWS Budgets（通知だけ。**強制停止ではない**） | 停止し忘れの安全網は制御の `maxRunningHours`（§4） |
+| 予算 | AWS Budgets（通知だけ。**強制停止ではない**） | 停止し忘れの安全網は制御の `maxRunningHours`（§4）とホストの稼働の上限（§5） |
+| 制御の監視 | CloudWatch のアラーム 2 個（Lambda のエラーが 1 時間に 3 回以上・定期実行が 1 時間来ない）→ SNS → メール | 制御が動かないと自動停止も通知も止まるため。購読の確認は本人（U12） |
 | バックアップ | mysqldump（整合）→ S3（SHA-256 確認・バージョニング・保持 35 日）+ EBS スナップショット（DLM・週 1・2 世代） | Cloud SQL の自動バックアップの置換え |
 
 不採用: NAT Gateway・ALB・RDS・Elastic IP（停止中も課金）・CloudFront・Secrets Manager・CloudWatch Agent・ECS/Fargate（常駐の費用）・Python。
@@ -67,12 +68,16 @@
 | NORMAL | 予期しない停止 | STARTING | StartInstances・通知 |
 | STOPPING | EC2 が stopped | STOPPED | 排出・バックアップの成否を記録（失敗は通知） |
 | STOPPING | 25 分で排出が終わらない／さらに 10 分 | （そのまま） | StopInstances／強制停止・通知 |
-| 任意 | 連続稼働が `maxRunningHours`（20 時間）を超えた | hold を外す → STOPPING | 通知（**停止し忘れの最後の安全網**） |
+| STOPPING | EC2 が stopping のまま 35 分（排出 25 + 停止 10） | （そのまま） | 強制停止・通知 |
+| 任意 | 連続稼働が `maxRunningHours`（20 時間）を超えた（**開催日の hold がある間は除く**。開催日の窓は計画で上限がある） | hold を外す → STOPPING | 通知（停止し忘れの安全網） |
+| 任意 | 開催の計画が無い・10 日より古い | 計画が読めない間は動いている開催日の hold を期限まで保つ | 通知（1 日 1 回） |
 
 - 二重の起動・起動中の再要求: hold の upsert なので冪等（同じ目的の hold は 1 つ）。起動中の停止要求・停止中の起動要求: どちらも次の収束で正しい向きになる（停止中に hold が来たら、EC2 が stopped になった時点で STOPPED → 次の実行で STARTING）。
 - 古い自動停止: hold の期限は「延長した時刻」で決まり、停止は「hold が無い」ことでしか起きない。`view-end` は `requested_at` より後に更新された VIEW を外さない。
 - 閲覧の期限で、開催日の処理・batch を止めない（それぞれ別の hold）。
-- 運用状態が壊れていたら何もしない（推測で書き換えない）。ホストの報告・計画が壊れていたら「無い」として扱う。
+- 運用状態が壊れていたら何もしない（推測で書き換えない）。**書く前にも検査する**（上限を超える状態を書かない。手動の開催日 30 件・飛ばす日 60 件・日付は昨日〜90 日先）。ホストの報告が壊れていたら「無い」として扱う。
+- 要求の時刻は GitHub の実行の作成時刻（runner の待ちで閲覧の延長と終了の順序が逆転しない）。
+- **DNS**: 動いている間は公開 IP、止まったら文書用のアドレス 192.0.2.1（手放した IP を他人が拾っても、この名前に届かない・証明書を取らせない）。1 時間ごとに書き直す。
 
 ## 5. ホスト（EC2）
 - Amazon Linux 2023（arm64）。user data（初回だけ）: Docker・ECR の資格情報ヘルパー・Node 24（SHA-256 を確認）・データ用 EBS の初期化（**ファイルシステムが無いときだけ**）・swap・systemd。
@@ -80,8 +85,10 @@
   - `boot`: SSM の秘密を tmpfs（/run/jrabot）へ → DB の利用者 → `db-migration --mode=validate`（**未適用があれば起動しない**。適用は deploy だけ）。
   - `tick`（1 分ごと）: 判断は `host.ts` の `planHost`（純粋）。閲覧だけなら MySQL・dashboard・oauth2-proxy・Caddy だけ。開催日は ingest と calendar-check（5 分ごと）→ spool（`JOB_LAUNCHER=spool`。web D-283）で bot-run。STOPPING を見たら排出。
   - boot・tick・deploy・backup・restore は `flock` で同時に動かさない（run-batch は長いので除外。排出は tick が止める）。
+  - `/data`（データの EBS）がマウントされていなければ起動しない（空の DB を作らない）。spool の起動は 1 回の実行で 1 つまで。照合（reconcile）が失敗した開催日は終わりにしない（15 分ごとに再試行）。
+  - **ホストの稼働の上限**（`max_uptime_hours` 既定 30 時間）: 制御が動かなくても自分で排出して止まる。
 - コンテナ（`services.ts`）: `--cap-drop ALL`・`no-new-privileges`・読取り専用（アプリ）・メモリ上限（スワップなし）・ログの上限・digest で固定。公開ポートは Caddy の 80/443 と 127.0.0.1 だけ（MySQL はどこにも公開しない）。
-- **IMDS の遮断**: インスタンスのロールはアプリ（S3 の運用状態・モデル）のためにコンテナから使えるようにしている（ホップ 2）。インターネットに面する Caddy・oauth2-proxy と MySQL は IMDS に届かない固定 IP（172.30.0.128/25）で動かし、`DOCKER-USER` の規則で 169.254.169.254 への通信を落とす。**残るリスク**: アプリのコンテナが乗っ取られると、インスタンスのロールの権限（SSM の秘密の読取りなど）に届く（ビーコンの署名鍵は明示的に拒否）。
+- **IMDS の遮断**: インスタンスのロールはアプリ（S3 の運用状態・モデル）のためにコンテナから使えるようにしている（ホップ 2）。インターネットに面する Caddy・oauth2-proxy と MySQL は IMDS に届かない固定 IP（172.30.0.128/25）で動かし、`DOCKER-USER` の規則で 169.254.169.254 への通信を落とす。**残るリスク**: アプリのコンテナ（dashboard・ingest・bot）が乗っ取られると、インスタンスのロールの権限に届く: SSM の秘密の読取り（ビーコンの署名鍵は明示的に拒否）、ホストの報告・開催の計画の偽造（早すぎる停止・余計な起動 = 費用）、版のファイルの書換え。版のファイルについては、ホストが**このアカウントの ECR の jra-bot/<名前> と許可したサードパーティの出どころ（tag + digest）のイメージだけ**を動かす（`assertTrustedImages`）ので、別のイメージは動かせない（古い版への差し替えは残る）。根本の対策（アプリの資格情報をホストのロールから分ける）は後続の課題。
 - メモリ（上限の合計）: 常駐（MySQL 448・dashboard 288・ingest 288・oauth2-proxy 64・Caddy 64 MiB）+ bot-run 384 + タスク 256 = 1,792 MiB ≤ 1,810（試験 `aws-services`）。batch・ml-train（1,024 MiB）は開催日には動かさない。
 
 ## 6. 認証・認可（本人だけ）
@@ -90,7 +97,7 @@
 | 画面 `https://<サイト>/` | Cognito（パスワード + TOTP の MFA）→ oauth2-proxy（`--authenticated-emails-file` で本人のメールだけ）→ dashboard が **ID トークンの署名・iss・aud・token_use・exp・email_verified を検証** | クライアントが付けたヘッダは信用しない（oauth2-proxy が Authorization を上書き。dashboard は署名を検証）。Cookie は `__Host-`・Secure・HttpOnly |
 | `/v1/agent/*` | エージェントのトークン（ingest。web CONTRACTS §8）| Cognito を通さない（機械）。閲覧だけの起動では ingest が動いていない |
 | `/internal/*` | Caddy で 404（外から届かない）。内部は `INTERNAL_OPS_TOKEN_FILE`（起動ごとに作る乱数・定数時間比較） | |
-| 起動・停止・状態・deploy | GitHub Actions（infra・`environment: ops`・main だけ）→ OIDC（`sub = repo:<owner>/jra-bot-infra:environment:ops`）→ IAM ロール | ロールの権限: Lambda の呼出し・SSM Run Command（このインスタンスと `AWS-RunShellScript` だけ）・`control/release-candidate.json` の書込み・SSM の秘密の作成（上書きなし） |
+| 起動・停止・状態・deploy | GitHub Actions（infra・`environment: ops`・main だけ）→ OIDC（`sub = repo:<owner>/jra-bot-infra:environment:ops`）→ IAM ロール | ロールの権限: Lambda の呼出し・SSM Run Command（このインスタンスと**専用のドキュメント `<prefix>-host-command` だけ**: `jrabot-host deploy|backup|run-batch`、引数は英数字と `=.,_:/ -` だけ。任意のシェルは送れない）・`control/release-candidate.json` の書込み・SSM の秘密の作成（`PutParameter` だけ。値を読む権限は無い） |
 | web のイメージの push | `environment: release` の OIDC → ECR の push だけ（`enableWebPush=true` の後） | |
 | 管理者 | SSM Session Manager（コンソール・CloudShell） | SSH なし・22 番を開けない |
 
@@ -99,7 +106,7 @@
 ## 7. データ保護
 - データ用 EBS は Pulumi で `protect`・`retainOnDelete`、EC2 は `disableApiTermination`、user data はファイルシステムがあれば初期化しない。コンテナの作り直し・EC2 の停止で消えない。
 - バックアップ: 停止のたび・deploy の前・restore の前・手動（`aws-backup`）に mysqldump `--single-transaction`（整合）→ gzip → S3（`IfNoneMatch` で上書きしない・SHA-256 を記録して読み直して確認）。**失敗を成功と報告しない**（ホストの報告 → 制御の `last_stop.backup_ok` → 通知）。保持 35 日（ライフサイクル）・旧版 7 日。ホストのロールは削除できない。
-- 復元: `jrabot-host restore --key … --confirm RESTORE-<日付>`（直前に現状のバックアップ）。合成データで dump → 別の MySQL へ復元 → 全表のチェックサム一致を CI で確認（`ops/it/backup-restore.mjs`。Flyway の実スキーマ 38 表でも確認）。
+- 復元: `jrabot-host restore --key … --confirm RESTORE-<日付>`（直前に現状のバックアップ。開催日・重い処理の起動目的があるとき・ジョブが動いているときは拒否。dump の最後の行を確かめてから DB を作り直して流し込む）。合成データで dump → 別の MySQL へ復元 → 全表のチェックサム一致を CI で確認（`ops/it/backup-restore.mjs`。Flyway の実スキーマ 38 表でも確認）。
 - 実データ・秘密・学習済みモデルを Git に入れない。**COMP-4 の回答までは実データを AWS に入れない**（web UNRESOLVED）。
 
 ## 8. 版数（固定）

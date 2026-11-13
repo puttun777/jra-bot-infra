@@ -147,3 +147,22 @@ describe("JOB_RESULT の行", () => {
     assert.equal(parseJobResult("JOB_RESULT task=calendar-check tenant=1 exit=0 reason=bad;rm", "calendar-check"), undefined);
   });
 });
+
+describe("spool の起動は 1 回の実行で 1 つまで", () => {
+  it("同じ実行で 2 つの起動依頼があっても bot-run は 1 つだけ起動し、残りは次の実行で判断する", () => {
+    const ops = { seq: 5, mode: "NORMAL" as const, raceday: true, batch: false };
+    const a = planHost(
+      facts({
+        ops,
+        services: { ...allUp, ingest: "running" },
+        spool: [
+          { file: "bot-run-1.json", request: spool() },
+          { file: "bot-run-2.json", request: spool() },
+        ],
+      }),
+      cfg,
+    );
+    assert.equal(a.filter((x) => x.type === "launch-bot-run").length, 1);
+    assert.ok(!a.some((x) => x.type === "discard-spool" && x.file === "bot-run-2.json"), "2 つ目は消さずに次の実行へ");
+  });
+});

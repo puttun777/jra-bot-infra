@@ -45,6 +45,13 @@ export class RequestRejected extends Error {
 const MIN = 60_000;
 /** 動いている間に DNS を書き直す間隔（IP は変わらなくても、前回の書込みの失敗を直す）。Route 53 の変更の API は無料。 */
 const DNS_REFRESH_MINUTES = 60;
+/** 止まっている間の A レコードの向け先（文書用のアドレス。どこにも届かない）。手放した公開 IP を他人が拾っても、この名前の証明書を取らせない。 */
+export const DNS_SINKHOLE = "192.0.2.1";
+/** 手動の開催日・飛ばす日の上限（状態の検査の上限と同じ。超える要求は拒否して、状態を読めなくしない）。 */
+const MAX_MANUAL_RACEDAYS = 30;
+const MAX_SKIP_DATES = 60;
+/** 開催の計画が古いとみなす日数（計画は動いている間だけ更新される）。 */
+const PLAN_STALE_DAYS = 10;
 const ms = (iso: string): number => {
   const t = Date.parse(iso);
   if (Number.isNaN(t)) throw new Error(`日時が不正: ${iso}`);
@@ -109,16 +116,20 @@ export function applyRequest(state: AwsOpsState, req: Request, nowIso: string): 
   const now = ms(nowIso);
   const s = clone(state);
   s.aws.holds = activeHolds(s, now);
-  const upsert = (purpose: Purpose, minutes: number, actor: string, reason: string): RequestResult => {
+  // 要求の時刻（本人が実行した時刻）。未来・1 時間より前は信用せず処理の時刻を使う
+  const stamp = (requestedAt: string | undefined): string =>
+    requestedAt !== undefined && ms(requestedAt) <= now && now - ms(requestedAt) <= 60 * MIN ? requestedAt : nowIso;
+  const upsert = (purpose: Purpose, minutes: number, actor: string, reason: string, requestedAt?: string): RequestResult => {
     const until = now + minutes * MIN;
+    const at = stamp(requestedAt);
     const existing = s.aws.holds.find((h) => h.purpose === purpose);
     if (existing !== undefined) {
       if (ms(existing.expires_at) < until) existing.expires_at = iso(until);
-      existing.updated_at = nowIso;
+      if (ms(existing.updated_at) < ms(at)) existing.updated_at = at;
       existing.actor = actor;
       return { state: s, message: `${purpose} を延長（期限 ${existing.expires_at}）`, holdId: existing.id };
     }
-    const h: Hold = { id: holdId(purpose, now), purpose, created_at: nowIso, updated_at: nowIso, expires_at: iso(until), actor, reason };
+    const h: Hold = { id: holdId(purpose, now), purpose, created_at: at, updated_at: at, expires_at: iso(until), actor, reason };
     s.aws.holds.push(h);
     return { state: s, message: `${purpose} を受付（期限 ${h.expires_at}）`, holdId: h.id };
   };
@@ -127,7 +138,7 @@ export function applyRequest(state: AwsOpsState, req: Request, nowIso: string): 
     case "status":
       return { state: s, message: "" };
     case "view":
-      return upsert("VIEW", req.minutes, req.actor, req.reason);
+      return upsert("VIEW", req.minutes, req.actor, req.reason, req.requested_at);
     case "view-end": {
       const before = s.aws.holds.length;
       const cut = ms(req.requested_at);
@@ -149,6 +160,10 @@ export function applyRequest(state: AwsOpsState, req: Request, nowIso: string): 
     }
     case "raceday-add": {
       if (s.aws.manual_racedays.some((d) => d.date === req.date)) return { state: s, message: "既に登録済み" };
+      if (req.date < jstDate(now - 24 * 60 * MIN) || req.date > jstDate(now + 90 * 24 * 60 * MIN))
+        throw new RequestRejected("開催日は昨日から 90 日先までの日付にする");
+      if (s.aws.manual_racedays.length >= MAX_MANUAL_RACEDAYS)
+        throw new RequestRejected(`手動の開催日は ${MAX_MANUAL_RACEDAYS} 件まで（古いものは 14 日で消える）`);
       s.aws.manual_racedays.push({
         date: req.date,
         first_post: req.first_post,
@@ -161,6 +176,10 @@ export function applyRequest(state: AwsOpsState, req: Request, nowIso: string): 
       return { state: s, message: `開催日 ${req.date} を手動で登録` };
     }
     case "raceday-skip": {
+      if (req.date < jstDate(now - 24 * 60 * MIN) || req.date > jstDate(now + 90 * 24 * 60 * MIN))
+        throw new RequestRejected("飛ばす日は昨日から 90 日先までの日付にする");
+      if (!s.aws.skip_dates.includes(req.date) && s.aws.skip_dates.length >= MAX_SKIP_DATES)
+        throw new RequestRejected(`飛ばす日は ${MAX_SKIP_DATES} 件まで`);
       if (!s.aws.skip_dates.includes(req.date)) s.aws.skip_dates.push(req.date);
       s.aws.holds = s.aws.holds.filter((h) => !(h.purpose === "RACEDAY" && h.race_date === req.date));
       return { state: s, message: `開催日 ${req.date} を自動起動しない` };
@@ -214,6 +233,17 @@ export function syncRacedayHolds(
     const w = racedayWindow(day, cfg);
     if (now >= w.start && now < w.end) wanted.set(day.date, w.end);
   }
+  // 計画が読めない（無い・壊れている）ときは、動いている開催日の hold を期限まで保つ（計画の不具合で開催日の途中に止めない）
+  if (plan === undefined)
+    for (const h of s.aws.holds)
+      if (
+        h.purpose === "RACEDAY" &&
+        h.race_date !== undefined &&
+        !wanted.has(h.race_date) &&
+        !s.aws.skip_dates.includes(h.race_date) &&
+        !s.aws.completed_racedays.includes(h.race_date)
+      )
+        wanted.set(h.race_date, ms(h.expires_at));
   // 窓に入っていない・終わった・飛ばす日の RACEDAY の hold は外す（期限より前でも）
   s.aws.holds = s.aws.holds.filter((h) => h.purpose !== "RACEDAY" || (h.race_date !== undefined && wanted.has(h.race_date)));
   for (const [d, end] of wanted) {
@@ -282,7 +312,13 @@ export function reconcile(
   let stop: Effects["stop"] = "none";
 
   // 最後の安全網: 連続稼働の上限（停止し忘れ）。hold を外して止める
-  if (s.aws.running_since !== null && now - ms(s.aws.running_since) > cfg.maxRunningHours * 60 * MIN && s.aws.holds.length > 0) {
+  // 開催日の hold がある間は適用しない（開催日の窓は計画で上限がある。前夜からの batch などで開催日の途中に止めない）
+  if (
+    s.aws.running_since !== null &&
+    now - ms(s.aws.running_since) > cfg.maxRunningHours * 60 * MIN &&
+    s.aws.holds.length > 0 &&
+    !s.aws.holds.some((h) => h.purpose === "RACEDAY")
+  ) {
     alertOnce(
       s,
       `max-running-${s.aws.running_since}`,
@@ -394,7 +430,15 @@ export function reconcile(
           notify.push({ title: "停止時のバックアップが失敗", body: "EBS のデータは残っている。status の backup を確認する" });
         break;
       }
-      if (instance.state === "stopping" || instance.state === "shutting-down") break;
+      if (instance.state === "stopping" || instance.state === "shutting-down") {
+        // 止まりかけのまま動かない（ハードウェアの障害など）。排出と停止の猶予を合わせて超えたら強制停止
+        if (now - since > (cfg.drainTimeoutMinutes + cfg.forceStopAfterMinutes) * MIN) {
+          stop = "force";
+          s.aws.stop_issued_at = s.aws.stop_issued_at ?? nowIso;
+          alertOnce(s, `stuck-stopping-${s.aws.stop_requested_at}`, "停止が終わらない", "stopping のまま動かないので強制停止する", notify);
+        }
+        break;
+      }
       if (s.aws.stop_issued_at === null && now - since > cfg.drainTimeoutMinutes * MIN) {
         s.aws.stop_issued_at = nowIso;
         stop = "normal";
@@ -419,10 +463,20 @@ export function reconcile(
   s.workloads = s.mode === "NORMAL" || s.mode === "STARTING" ? workloads : { raceday: false, batch: false };
   const beacon = beaconMode(s, host, now, cfg);
   // DNS: IP が変わったとき（起動のたびに変わる）と、念のため 1 時間ごとに書き直す（前回の書込みの失敗を自然に直す）。記録は状態と一緒に CAS で書く
-  const dnsStale =
-    s.aws.last_dns === null || s.aws.last_dns.ip !== instance.publicIp || now - ms(s.aws.last_dns.at) > DNS_REFRESH_MINUTES * MIN;
-  const dnsIp = running && instance.publicIp !== undefined && dnsStale ? instance.publicIp : undefined;
+  // 止まっている間は文書用のアドレスに向ける（手放した公開 IP を他人が拾っても、この名前に届かない・証明書を取らせない）
+  const dnsTarget = running ? instance.publicIp : instance.state === "stopped" ? DNS_SINKHOLE : undefined;
+  const dnsStale = s.aws.last_dns === null || s.aws.last_dns.ip !== dnsTarget || now - ms(s.aws.last_dns.at) > DNS_REFRESH_MINUTES * MIN;
+  const dnsIp = dnsTarget !== undefined && dnsStale ? dnsTarget : undefined;
   if (dnsIp !== undefined) s.aws.last_dns = { ip: dnsIp, at: nowIso };
+  // 開催の計画が無い・古い（動いている間だけ更新される）: 開催日に自動で起動できないので知らせる（1 日 1 回）
+  if (plan === undefined || now - ms(plan.generated_at) > PLAN_STALE_DAYS * 24 * 60 * MIN)
+    alertOnce(
+      s,
+      `plan-${jstDate(now)}`,
+      "開催の計画が無い・古い",
+      "開催日の自動起動ができない。aws-view で一度起動する（計画を更新する）か、aws-raceday add で登録する",
+      notify,
+    );
   return { state: s, effects: { start, stop, beacon: publishedBeacon === beacon ? undefined : beacon, dnsIp, notify } };
 }
 

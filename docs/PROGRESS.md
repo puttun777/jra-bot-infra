@@ -5,7 +5,8 @@
 - **追加**: `pulumi-aws/`（VPC・SG 443/80・EC2 t4g.small・データ用 EBS〔protect・retainOnDelete〕・DLM・S3 4 本・ECR 5・Cognito Lite・Route 53・Lambda・Scheduler・GitHub OIDC のロール・Budgets。zod の設定・user data・mock 試験 12 件）、`ops/src/aws/`（`controller.ts` 状態機械・`lambda.ts`・`host.ts`〔純粋〕・`hostctl.ts`〔運用エージェント〕・`services.ts`・`cli.ts`）、`ops/bundle-aws.mjs`（esbuild）、`ops/it/backup-restore.mjs`、workflow `aws-view`・`aws-status`・`aws-stop`・`aws-raceday`・`aws-batch`・`aws-backup`・`aws-deploy`・`aws-secrets-init`、CI のジョブ `aws-backup-restore` と ops-tests への bundle・pulumi-aws の試験。文書 `AWS_ARCHITECTURE.md`・`AWS_OPERATIONS.md`・CLOUD_COSTS §12。`schemas/release-manifest.v3.json` を web 0.4.19 に同期。
 - **検証（ローカル。Node 24.22.2・Docker 29.9.2）**: lint（biome）、ops 183 件・pulumi 30 件・pulumi-aws 12 件（skip 0）、バックアップ・復元の結合試験（合成 5 表・Flyway の実スキーマ 38 表 + 合成データ。チェックサム一致）、Docker の網（subnet・ip-range・固定 IP）と iptables の規則の書式。**未実施**（実環境が必要。`AWS_OPERATIONS.md` §11）: pulumi preview/up、Lambda・EC2・Cognito・Let's Encrypt・Route 53・SSM・ECR の実動作、arm64 の実機、Windows エージェントの接続、実データの移行。`terraform` は変更なし。
 - **本人の承認が必要**: `pulumi up`（課金リソースの作成）、`enableWebPush`（IAM）、実データの投入（COMP-4 の後）、GCP の停止・削除、ドメイン。用意するもの: `AWS_OPERATIONS.md` §0（U1〜U12）。
-- **次**: 独立レビュー → 修正 → PR → CI。その後、本人の承認を得て §1 の初回の構築。
+- **独立レビュー（Opus・読取り専用。GitHub の第三者 Approve ではない）**: 高 0・中 8・低/中 7 → すべて修正（I-048）。修正後: ops 193 件・pulumi 30 件・pulumi-aws 13 件（skip 0）、lint。追加の費用: CloudWatch のアラーム 2 個 $0.20/月（CLOUD_COSTS §12 を更新: 100 時間 ≈ ¥1,226）。
+- **次**: 修正後の独立レビュー → PR → CI。**この PR は IAM の定義を含むため、マージは本人の確認の後**。その後、本人の承認を得て AWS_OPERATIONS §1 の初回の構築。
 
 ## 2026-11-09 案 1 の最小化を IaC に反映（ブランチ claude/serene-mayer-pxakgw。I-041。**適用はしない**）
 - 本人が案 1（Cloud Run + Cloud SQL の最小化）を選択（web D-278）。Pulumi・Terraform の既定: Cloud SQL db-f1-micro・SSD 10 GB・予算の通知 3,000 円。試験の期待値を更新。ARCHITECTURE §3・OPERATIONS_DESIGN・PULUMI_MIGRATION。作成後のディスクの大きさの差分は無視（縮小できないため。自動拡張の後も含む）。予算 3,000 円は 1a・現行 bot-run だと毎月通知が出る見込み（I-041）。

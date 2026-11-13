@@ -88,6 +88,7 @@ Description=jra-bot: 運用エージェントの取得と起動時の準備
 After=docker.service network-online.target data.mount
 Wants=network-online.target
 Requires=docker.service
+RequiresMountsFor=/data
 [Service]
 Type=oneshot
 RemainAfterExit=yes

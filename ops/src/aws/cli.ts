@@ -19,12 +19,13 @@ import { appendFileSync } from "node:fs";
 import { parseArgs } from "node:util";
 import { InvokeCommand, LambdaClient } from "@aws-sdk/client-lambda";
 import { PutObjectCommand, S3Client } from "@aws-sdk/client-s3";
-import { GetCommandInvocationCommand, GetParameterCommand, PutParameterCommand, SendCommandCommand, SSMClient } from "@aws-sdk/client-ssm";
+import { GetCommandInvocationCommand, PutParameterCommand, SendCommandCommand, SSMClient } from "@aws-sdk/client-ssm";
 import { Ajv2020 } from "ajv/dist/2020.js";
 import { z } from "zod";
 import { CONTRACT_MAJOR_MINOR, compareVersions, loadJson } from "../deploy.js";
 import { errorMessage } from "../json.js";
 import { REGION } from "./adapters.js";
+import { HOST_IMAGE_PATTERNS } from "./services.js";
 
 export class CliError extends Error {
   override readonly name = "CliError";
@@ -141,15 +142,14 @@ const SECRET_NAMES = [
 /** 乱数の秘密を SSM の SecureString に作る（**既にあるものは上書きしない**。値は出力しない）。ビーコン・モデルの署名鍵も作る。 */
 async function secretsInit(ssm: SSMClient, prefix: string): Promise<string[]> {
   const created: string[] = [];
+  // 値を読まずに「無いときだけ作る」（Overwrite=false。既にあれば ParameterAlreadyExists）。GitHub のロールに GetParameter を渡さない
   const put = async (name: string, value: string): Promise<void> => {
     try {
-      await ssm.send(new GetParameterCommand({ Name: `${prefix}/${name}` }));
-      return; // 既にある
+      await ssm.send(new PutParameterCommand({ Name: `${prefix}/${name}`, Value: value, Type: "SecureString", Overwrite: false }));
+      created.push(name);
     } catch (e) {
-      if (!(typeof e === "object" && e !== null && "name" in e && (e as { name: string }).name === "ParameterNotFound")) throw e;
+      if (!(typeof e === "object" && e !== null && "name" in e && (e as { name: string }).name === "ParameterAlreadyExists")) throw e;
     }
-    await ssm.send(new PutParameterCommand({ Name: `${prefix}/${name}`, Value: value, Type: "SecureString", Overwrite: false }));
-    created.push(name);
   };
   for (const n of SECRET_NAMES)
     await put(n, randomBytes(n === "oauth2-cookie-secret" ? 32 : 30).toString(n === "oauth2-cookie-secret" ? "base64" : "base64url"));
@@ -161,7 +161,19 @@ async function secretsInit(ssm: SSMClient, prefix: string): Promise<string[]> {
   return created;
 }
 
-async function ssmRun(ssm: SSMClient, instanceId: string, command: string, timeoutMin: number): Promise<{ status: string; out: string }> {
+/** ホストで許したコマンドだけを実行する（SSM の専用ドキュメント。任意のシェルは送れない: infra の Pulumi の host-command）。 */
+export const HOST_ACTIONS = ["deploy", "backup", "run-batch"] as const;
+export const HOST_ARGS = /^[A-Za-z0-9=.,_:/ -]{0,600}$/;
+
+async function ssmRun(
+  ssm: SSMClient,
+  instanceId: string,
+  document: string,
+  action: (typeof HOST_ACTIONS)[number],
+  args: string,
+  timeoutMin: number,
+): Promise<{ status: string; out: string }> {
+  if (!HOST_ARGS.test(args)) throw new CliError("ホストのコマンドの引数に使えない文字がある", 2);
   let id: string | undefined;
   // 起動の直後は SSM のエージェントが登録されておらず InvalidInstanceId になる。5 分まで待つ
   for (let i = 0; i < 20 && id === undefined; i++) {
@@ -169,8 +181,8 @@ async function ssmRun(ssm: SSMClient, instanceId: string, command: string, timeo
       const sent = await ssm.send(
         new SendCommandCommand({
           InstanceIds: [instanceId],
-          DocumentName: "AWS-RunShellScript",
-          Parameters: { commands: [command], executionTimeout: [String(timeoutMin * 60)] },
+          DocumentName: document,
+          Parameters: { action: [action], args: [args], executionTimeout: [String(timeoutMin * 60)] },
           TimeoutSeconds: 600,
         }),
       );
@@ -196,13 +208,12 @@ async function ssmRun(ssm: SSMClient, instanceId: string, command: string, timeo
   return { status: "TimedOut", out: "" };
 }
 
-const PINNED = (repo: RegExp): z.ZodString => z.string().regex(new RegExp(`^${repo.source}:[A-Za-z0-9._-]{1,64}@sha256:[0-9a-f]{64}$`));
-/** サードパーティのイメージ（Pulumi の出力 host_images を GitHub の環境変数 HOST_IMAGES に置く。tag と digest の両方で固定）。 */
+/** サードパーティのイメージ（Pulumi の出力 host_images を GitHub の環境変数 HOST_IMAGES に置く。tag と digest の両方で固定。ホストも同じ規則で検査する）。 */
 export const HostImagesSchema = z
   .object({
-    mysql: PINNED(/(docker\.io\/library\/)?mysql/),
-    caddy: PINNED(/(docker\.io\/library\/)?caddy/),
-    "oauth2-proxy": PINNED(/quay\.io\/oauth2-proxy\/oauth2-proxy/),
+    mysql: z.string().regex(HOST_IMAGE_PATTERNS.mysql),
+    caddy: z.string().regex(HOST_IMAGE_PATTERNS.caddy),
+    "oauth2-proxy": z.string().regex(HOST_IMAGE_PATTERNS.oauth2Proxy),
   })
   .strict();
 export type HostImagesInput = z.infer<typeof HostImagesSchema>;
@@ -271,15 +282,40 @@ export function buildRelease(
   return { ...m, host_images: hostImages };
 }
 
-/** EC2 が running になるまで待つ（制御の status）。 */
+/** EC2 が running で、運用モードが起動の側（STARTING・NORMAL）になるまで待つ（停止の途中の排出・電源断に重ねない）。 */
 async function waitRunning(lambda: LambdaClient, fn: string, minutes: number, sleep: (ms: number) => Promise<void>): Promise<boolean> {
   const deadline = Date.now() + minutes * 60_000;
   while (Date.now() < deadline) {
-    const s = await invoke(lambda, fn, { action: "status" });
-    if ((s["summary"] as Record<string, unknown> | undefined)?.["ec2"] === "running") return true;
+    const s = (await invoke(lambda, fn, { action: "status" }))["summary"] as Record<string, unknown> | undefined;
+    if (s?.["ec2"] === "running" && (s["mode"] === "STARTING" || s["mode"] === "NORMAL")) return true;
     await sleep(15_000);
   }
   return false;
+}
+
+/**
+ * 本人が要求した時刻 = GitHub の実行の作成時刻（runner の待ちで要求の順序が逆転しないように）。取れなければ今の時刻。
+ * 閲覧の延長と閲覧の終了・全停止の前後の比較に使う（controller.applyRequest）。
+ */
+export async function dispatchedAt(env: NodeJS.ProcessEnv, fetchFn: typeof fetch = fetch): Promise<string> {
+  const now = new Date().toISOString().replace(/\.\d{3}Z$/, "Z");
+  const id = env["GITHUB_RUN_ID"];
+  const repo = env["GITHUB_REPOSITORY"];
+  const token = env["GITHUB_TOKEN"];
+  const api = env["GITHUB_API_URL"] ?? "https://api.github.com";
+  if (!id || !repo || !token || !/^\d{1,20}$/.test(id) || !/^[\w.-]+\/[\w.-]+$/.test(repo) || !/^https:\/\/[\w.-]+(\/[\w./-]*)?$/.test(api))
+    return now;
+  try {
+    const r = await fetchFn(`${api}/repos/${repo}/actions/runs/${id}`, {
+      headers: { Authorization: `Bearer ${token}`, Accept: "application/vnd.github+json" },
+      signal: AbortSignal.timeout(15_000),
+    });
+    if (r.status !== 200) return now;
+    const created = z.object({ created_at: z.string().regex(/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z$/) }).safeParse(await r.json());
+    return created.success && created.data.created_at <= now ? created.data.created_at : now;
+  } catch {
+    return now;
+  }
 }
 
 /** GitHub Actions の step の出力（GITHUB_OUTPUT）。値は検査したものだけ（改行で別の出力を作らせない）。 */
@@ -336,7 +372,13 @@ export async function main(argv: readonly string[], env: NodeJS.ProcessEnv = pro
       case "status":
         return out(await invoke(lambda, fn, { action: "status" }));
       case "view": {
-        const r = await invoke(lambda, fn, { action: "view", minutes: minutes(60), actor, reason: a.reason || "閲覧" });
+        const r = await invoke(lambda, fn, {
+          action: "view",
+          minutes: minutes(60),
+          actor,
+          reason: a.reason || "閲覧",
+          requested_at: await dispatchedAt(env),
+        });
         console.log(render(r));
         if (r["ok"] === false || !a.wait) return r["ok"] === false ? 1 : 0;
         const ready = await waitUsable(lambda, fn, 15, sleep);
@@ -349,9 +391,7 @@ export async function main(argv: readonly string[], env: NodeJS.ProcessEnv = pro
         });
       }
       case "view-end":
-        return out(
-          await invoke(lambda, fn, { action: "view-end", actor, requested_at: new Date().toISOString().replace(/\.\d{3}Z$/, "Z") }),
-        );
+        return out(await invoke(lambda, fn, { action: "view-end", actor, requested_at: await dispatchedAt(env) }));
       case "batch": {
         if (a.reason === "") throw new CliError("--reason が必要", 2);
         const r = await invoke(lambda, fn, { action: "batch", minutes: minutes(180), actor, reason: a.reason });
@@ -390,7 +430,7 @@ export async function main(argv: readonly string[], env: NodeJS.ProcessEnv = pro
             action: "stop-all",
             actor,
             reason: a.reason,
-            requested_at: new Date().toISOString().replace(/\.\d{3}Z$/, "Z"),
+            requested_at: await dispatchedAt(env),
           }),
         );
       case "secrets-init": {
@@ -407,7 +447,9 @@ export async function main(argv: readonly string[], env: NodeJS.ProcessEnv = pro
         const r = await ssmRun(
           new SSMClient({ region: REGION, credentials: creds }),
           need("INSTANCE_ID"),
-          ["/opt/jrabot/bin/jrabot-host", "run-batch", `--task=${task}`, ...args].join(" "),
+          need("HOST_COMMAND_DOCUMENT"),
+          "run-batch",
+          [`--task=${task}`, ...args].join(" "),
           360,
         );
         console.log(`run-batch: ${r.status}\n\`\`\`\n${r.out}\n\`\`\``);
@@ -417,7 +459,9 @@ export async function main(argv: readonly string[], env: NodeJS.ProcessEnv = pro
         const r = await ssmRun(
           new SSMClient({ region: REGION, credentials: creds }),
           need("INSTANCE_ID"),
-          `/opt/jrabot/bin/jrabot-host backup --reason=${a.reason.replace(/[^a-z0-9-]/g, "") || "manual"}`,
+          need("HOST_COMMAND_DOCUMENT"),
+          "backup",
+          `--reason=${a.reason.replace(/[^a-z0-9-]/g, "").slice(0, 40) || "manual"}`,
           40,
         );
         console.log(`backup: ${r.status}\n\`\`\`\n${r.out}\n\`\`\``);
@@ -440,20 +484,25 @@ export async function main(argv: readonly string[], env: NodeJS.ProcessEnv = pro
             ContentType: "application/json",
           }),
         );
-        const hold = await invoke(lambda, fn, { action: "maintenance", minutes: 60, actor, reason: `deploy ${candidate.release}` });
+        const reason = `deploy ${candidate.release}`;
+        const hold = await invoke(lambda, fn, { action: "maintenance", minutes: 120, actor, reason });
         if (hold["ok"] === false) return out(hold);
         const holdId = String(hold["holdId"] ?? "");
         try {
-          // アプリの準備完了ではなく EC2 の起動を待つ（初回はまだ版が無いのでアプリが準備できない）
-          if (!(await waitRunning(lambda, fn, 10, sleep))) throw new CliError("EC2 が 10 分で起動しない（status で確認）");
+          // アプリの準備完了ではなく EC2 の起動を待つ（初回はまだ版が無いのでアプリが準備できない）。停止の途中（排出・電源断）には送らない
+          if (!(await waitRunning(lambda, fn, 15, sleep))) throw new CliError("EC2 が 15 分で起動しない（status で確認）");
           const r = await ssmRun(
             new SSMClient({ region: REGION, credentials: creds }),
             need("INSTANCE_ID"),
-            "/opt/jrabot/bin/jrabot-host deploy",
+            need("HOST_COMMAND_DOCUMENT"),
+            "deploy",
+            "",
             40,
           );
           console.log(`deploy: ${r.status}\n\`\`\`\n${r.out}\n\`\`\``);
           if (r.status !== "Success") return 1;
+          // 準備完了を待つ間に保守の期限が切れて止まらないように延ばす
+          await invoke(lambda, fn, { action: "maintenance", minutes: 30, actor, reason });
           const ready = await waitUsable(lambda, fn, 15, sleep);
           console.log(render({ ...ready, message: `deploy ${candidate.release}` }));
           return (ready["summary"] as Record<string, unknown> | undefined)?.["usable"] === true ? 0 : 1;

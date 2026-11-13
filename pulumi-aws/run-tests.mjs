@@ -3,7 +3,7 @@ import { spawnSync } from "node:child_process";
 import { mkdirSync, readdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 
-const MIN = 12;
+const MIN = 13;
 const dir = "build/pulumi-aws/test";
 const files = readdirSync(dir)
   .filter((f) => f.endsWith(".test.js"))

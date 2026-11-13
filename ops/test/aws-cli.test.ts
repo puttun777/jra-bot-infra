@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { describe, it } from "node:test";
-import { buildRelease, CliError, parseHostImages, render } from "../src/aws/cli.js";
+import { buildRelease, CliError, dispatchedAt, HOST_ARGS, parseHostImages, render } from "../src/aws/cli.js";
 
 const D = `@sha256:${"b".repeat(64)}`;
 const ECR = "123456789012.dkr.ecr.ap-northeast-1.amazonaws.com/jra-bot";
@@ -104,5 +104,28 @@ describe("状態の表示", () => {
     assert.match(text, /準備完了まで表示しない/);
     assert.match(text, /VIEW 〜2026-11-13T10:00:00Z/);
     assert.match(text, /自動停止の予定: 2026-11-13T10:00:00Z/);
+  });
+});
+
+describe("要求の時刻・ホストのコマンドの引数", () => {
+  it("要求の時刻は GitHub の実行の作成時刻（取れなければ今の時刻。未来の値は使わない）", async () => {
+    const env = { GITHUB_RUN_ID: "123", GITHUB_REPOSITORY: "o/jra-bot-infra", GITHUB_TOKEN: "t", GITHUB_API_URL: "https://api.github.com" };
+    let url = "";
+    const ok: typeof fetch = async (u) => {
+      url = String(u);
+      return new Response(JSON.stringify({ created_at: "2026-11-13T00:00:00Z" }), { status: 200 });
+    };
+    assert.equal(await dispatchedAt(env, ok), "2026-11-13T00:00:00Z");
+    assert.equal(url, "https://api.github.com/repos/o/jra-bot-infra/actions/runs/123");
+    const future: typeof fetch = async () => new Response(JSON.stringify({ created_at: "2999-01-01T00:00:00Z" }), { status: 200 });
+    assert.notEqual(await dispatchedAt(env, future), "2999-01-01T00:00:00Z");
+    const fail: typeof fetch = async () => new Response("no", { status: 403 });
+    assert.match(await dispatchedAt(env, fail), /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z$/);
+    assert.match(await dispatchedAt({}, ok), /^\d{4}-\d{2}-\d{2}T/, "GitHub の外では今の時刻");
+  });
+
+  it("ホストのコマンドの引数はシェルの記号を含められない（SSM のドキュメントの allowedPattern と同じ）", () => {
+    assert.ok(HOST_ARGS.test("--task=backtest --from=2026-01-01 --to=2026-06-30"));
+    for (const bad of ["; rm -rf /", "$(id)", "a|b", "`id`", "a&&b", "x\ny", "'q'"]) assert.ok(!HOST_ARGS.test(bad), bad);
   });
 });

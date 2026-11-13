@@ -16,6 +16,7 @@ on:
 permissions:
   contents: read
   id-token: write
+  actions: read # 要求の時刻（この実行の作成時刻）を読む: 閲覧の延長と終了の前後を、runner の待ちで逆転させない
 defaults:
   run:
     shell: bash
@@ -28,6 +29,7 @@ jobs:
     env:
       AWS_ROLE_ARN: ${{ vars.AWS_OPS_ROLE_ARN }}
       CONTROLLER_FUNCTION: ${{ vars.AWS_CONTROLLER_FUNCTION }}
+      GITHUB_TOKEN: ${{ github.token }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:

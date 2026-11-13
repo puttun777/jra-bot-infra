@@ -3,6 +3,7 @@ import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 import {
   assertPinned,
+  assertTrustedImages,
   dockerRunArgs,
   FIXED_IPS,
   type HostImages,
@@ -110,3 +111,14 @@ function isInNoImdsRange(ip: string): boolean {
   const m = /^172\.30\.0\.(\d{1,3})$/.exec(ip);
   return m?.[1] !== undefined && Number(m[1]) >= 128 && Number(m[1]) <= 254;
 }
+
+describe("ホストが動かすイメージの出どころ", () => {
+  it("アプリはこのアカウントの ECR の jra-bot/<名前>、サードパーティは許可した出どころだけ（版のファイルの書換えで別のイメージを動かさない）", () => {
+    const reg = "123456789012.dkr.ecr.ap-northeast-1.amazonaws.com";
+    assertTrustedImages(img, reg);
+    assert.throws(() => assertTrustedImages(img, "999999999999.dkr.ecr.ap-northeast-1.amazonaws.com"), /ECR/);
+    assert.throws(() => assertTrustedImages({ ...img, caddy: `evil.example.com/caddy:2.11.6${D}` }, reg), /出どころ/);
+    assert.throws(() => assertTrustedImages({ ...img, bot: `${reg}/jra-bot/dashboard${D}` }, reg), /bot/);
+    assert.throws(() => assertTrustedImages({ ...img, oauth2Proxy: `quay.io/someone/oauth2-proxy:v7.15.3${D}` }, reg), /出どころ/);
+  });
+});

@@ -36,6 +36,7 @@ export interface AwsOutputs {
   readonly stateBucket: pulumi.Output<string>;
   readonly beaconUrl: pulumi.Output<string>;
   readonly opsRoleArn: pulumi.Output<string>;
+  readonly hostCommandDocument: pulumi.Output<string>;
   readonly webPushRoleArn: pulumi.Output<string> | undefined;
   readonly ecrRegistry: string;
   readonly cognitoIssuer: pulumi.Output<string>;
@@ -404,6 +405,7 @@ export function defineAwsInfra(c: AwsInfraConfig, provider: aws.Provider, root =
       backup_bucket: bb,
       models_bucket: mb,
       ssm_prefix: SSM_PREFIX,
+      ecr_registry: ecrRegistry,
       site_host: c.siteHost,
       cognito_issuer: iss,
       cognito_client_id: cid,
@@ -591,6 +593,82 @@ export function defineAwsInfra(c: AwsInfraConfig, provider: aws.Provider, root =
     o,
   );
 
+  // 制御そのものの失敗の検知（制御が動かないと自動停止も通知も止まる）: Lambda のエラーが続く・定期実行が来ない → メール（SNS。購読の確認は本人）
+  const alarmTopic = new aws.sns.Topic(`${p}-alarms`, { name: `${p}-alarms`, tags }, o);
+  new aws.sns.TopicSubscription(
+    `${p}-alarms-email`,
+    { topic: alarmTopic.arn, protocol: "email", endpoint: c.budgetEmail ?? c.ownerEmail },
+    o,
+  );
+  new aws.cloudwatch.MetricAlarm(
+    `${p}-controller-errors`,
+    {
+      name: `${p}-controller-errors`,
+      alarmDescription: "jra-bot: 制御の Lambda が失敗し続けている（自動停止が働かない可能性）",
+      namespace: "AWS/Lambda",
+      metricName: "Errors",
+      dimensions: { FunctionName: controller.name },
+      statistic: "Sum",
+      period: 3600,
+      evaluationPeriods: 1,
+      threshold: 3,
+      comparisonOperator: "GreaterThanOrEqualToThreshold",
+      treatMissingData: "notBreaching",
+      alarmActions: [alarmTopic.arn],
+      okActions: [alarmTopic.arn],
+      tags,
+    },
+    o,
+  );
+  new aws.cloudwatch.MetricAlarm(
+    `${p}-controller-silent`,
+    {
+      name: `${p}-controller-silent`,
+      alarmDescription: "jra-bot: 制御の定期実行が 1 時間来ていない（Scheduler の停止・権限の誤り）",
+      namespace: "AWS/Lambda",
+      metricName: "Invocations",
+      dimensions: { FunctionName: controller.name },
+      statistic: "Sum",
+      period: 3600,
+      evaluationPeriods: 1,
+      threshold: 1,
+      comparisonOperator: "LessThanThreshold",
+      treatMissingData: "breaching",
+      alarmActions: [alarmTopic.arn],
+      okActions: [alarmTopic.arn],
+      tags,
+    },
+    o,
+  );
+
+  // ホストで実行してよいコマンドだけの SSM ドキュメント（GitHub のロールに任意のシェル〔AWS-RunShellScript〕を渡さない）。引数は文字を限る
+  const hostCommand = new aws.ssm.Document(
+    `${p}-host-command`,
+    {
+      name: `${p}-host-command`,
+      documentType: "Command",
+      documentFormat: "JSON",
+      content: JSON.stringify({
+        schemaVersion: "2.2",
+        description: "jra-bot: jrabot-host の deploy・backup・run-batch だけを実行する",
+        parameters: {
+          action: { type: "String", allowedValues: ["deploy", "backup", "run-batch"] },
+          args: { type: "String", default: "", allowedPattern: "^[A-Za-z0-9=.,_:/ -]{0,600}$" },
+          executionTimeout: { type: "String", default: "3600", allowedPattern: "^[0-9]{2,5}$" },
+        },
+        mainSteps: [
+          {
+            action: "aws:runShellScript",
+            name: "jrabotHost",
+            inputs: { timeoutSeconds: "{{ executionTimeout }}", runCommand: ["/opt/jrabot/bin/jrabot-host {{ action }} {{ args }}"] },
+          },
+        ],
+      }),
+      tags,
+    },
+    o,
+  );
+
   // ---------------------------------------------------------------- GitHub Actions の OIDC（長期キーなし）
   const oidcArn: pulumi.Input<string> =
     c.githubOidcProviderArn ??
@@ -620,23 +698,19 @@ export function defineAwsInfra(c: AwsInfraConfig, provider: aws.Provider, root =
     `${p}-gha-ops-inline`,
     {
       role: ops.id,
-      policy: pulumi.all([controller.arn, instance.arn, state.arn]).apply(([fn, inst, s]) =>
+      policy: pulumi.all([controller.arn, instance.arn, state.arn, hostCommand.arn]).apply(([fn, inst, s, doc]) =>
         policyDoc([
           { Sid: "Controller", Effect: "Allow", Action: ["lambda:InvokeFunction"], Resource: fn },
-          {
-            Sid: "HostCommands",
-            Effect: "Allow",
-            Action: ["ssm:SendCommand"],
-            Resource: [inst, `arn:aws:ssm:${region}::document/AWS-RunShellScript`],
-          },
+          // 専用のドキュメントだけ（任意のシェルは送れない）
+          { Sid: "HostCommands", Effect: "Allow", Action: ["ssm:SendCommand"], Resource: [inst, doc] },
           { Sid: "CommandResult", Effect: "Allow", Action: ["ssm:GetCommandInvocation"], Resource: "*" },
           // 候補だけを置ける（正式な版への昇格はホストが deploy の成功後に行う）
           { Sid: "Release", Effect: "Allow", Action: ["s3:PutObject"], Resource: `${s}/control/release-candidate.json` },
-          // secrets-init: 作るだけ（既にあるものは CLI が上書きしない）。値は読めないように Get は存在確認だけに使う
+          // secrets-init: 作るだけ（CLI は Overwrite=false。既にあれば ParameterAlreadyExists）。値を読む権限（GetParameter）は渡さない
           {
             Sid: "SecretsInit",
             Effect: "Allow",
-            Action: ["ssm:PutParameter", "ssm:GetParameter"],
+            Action: ["ssm:PutParameter"],
             Resource: `arn:aws:ssm:${region}:${c.accountId}:parameter${SSM_PREFIX}/*`,
           },
         ]),
@@ -707,6 +781,7 @@ export function defineAwsInfra(c: AwsInfraConfig, provider: aws.Provider, root =
     stateBucket: state.bucket,
     beaconUrl: pulumi.interpolate`https://${beacon.bucket}.s3.${region}.amazonaws.com/beacon/mode.json`,
     opsRoleArn: ops.arn,
+    hostCommandDocument: hostCommand.name,
     webPushRoleArn,
     ecrRegistry,
     cognitoIssuer: issuer,

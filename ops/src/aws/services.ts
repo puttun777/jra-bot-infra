@@ -310,6 +310,33 @@ export function dockerRunArgs(spec: ContainerSpec, mode: { detach: boolean; remo
   return args;
 }
 
+/** サードパーティのイメージの出どころ（tag と digest の両方で固定）。CLI の HOST_IMAGES とホストの検査が共用する。 */
+export const HOST_IMAGE_PATTERNS: Readonly<Record<"mysql" | "caddy" | "oauth2Proxy", RegExp>> = {
+  mysql: /^(docker\.io\/library\/)?mysql:[A-Za-z0-9._-]{1,64}@sha256:[0-9a-f]{64}$/,
+  caddy: /^(docker\.io\/library\/)?caddy:[A-Za-z0-9._-]{1,64}@sha256:[0-9a-f]{64}$/,
+  oauth2Proxy: /^quay\.io\/oauth2-proxy\/oauth2-proxy:v\d+\.\d+\.\d+@sha256:[0-9a-f]{64}$/,
+};
+
+/**
+ * ホストが動かしてよいイメージだけか（版のファイルが書き換えられても、別の出どころのイメージを動かさない）。
+ * アプリは このアカウントの ECR の jra-bot/<名前>（不変のタグ・digest）、サードパーティは HOST_IMAGE_PATTERNS。
+ */
+export function assertTrustedImages(img: HostImages, ecrRegistry: string): void {
+  if (!/^\d{12}\.dkr\.ecr\.ap-northeast-1\.amazonaws\.com$/.test(ecrRegistry)) throw new Error("ECR のレジストリの形式が不正");
+  const app: Record<string, [string, string]> = {
+    dashboard: [img.dashboard, "dashboard"],
+    ingest: [img.ingest, "ingest"],
+    bot: [img.bot, "bot"],
+    dbMigration: [img.dbMigration, "db-migration"],
+    mlTrain: [img.mlTrain, "ml-train"],
+  };
+  for (const [k, [ref, name]] of Object.entries(app))
+    if (!new RegExp(`^${ecrRegistry.replaceAll(".", "\\.")}/jra-bot/${name}@sha256:[0-9a-f]{64}$`).test(ref))
+      throw new Error(`イメージ ${k} がこのアカウントの ECR の jra-bot/${name} ではない`);
+  for (const k of ["mysql", "caddy", "oauth2Proxy"] as const)
+    if (!HOST_IMAGE_PATTERNS[k].test(img[k])) throw new Error(`イメージ ${k} の出どころが許可されていない`);
+}
+
 /** イメージの参照は digest で固定する（タグだけの参照は動かさない）。 */
 export function assertPinned(img: HostImages): void {
   for (const [k, v] of Object.entries(img)) {

@@ -106,7 +106,8 @@ export function planHost(f: HostFacts, cfg: HostConfig): HostAction[] {
   // 許されていない処理は止める（開催日でないのに bot-run、batch でないのに重い処理）
   if (!f.ops.raceday && f.botRun.running) out.push({ type: "stop-job", job: "bot-run" });
   if (!f.ops.batch && f.batch.running) out.push({ type: "stop-job", job: "batch" });
-  // spool の起動依頼（bot-run だけ）
+  // spool の起動依頼（bot-run だけ。1 回の実行で起動は 1 つまで: 2 つ目の起動が 1 つ目を消さないように。残りは次の実行で判断）
+  let launched = false;
   for (const e of f.spool) {
     if (e.request === undefined) {
       out.push({ type: "discard-spool", file: e.file, reason: "形式が不正" });
@@ -116,7 +117,10 @@ export function planHost(f: HostFacts, cfg: HostConfig): HostAction[] {
     if (!raceday) out.push({ type: "discard-spool", file: e.file, reason: "開催日の処理が許されていない" });
     else if (date !== today) out.push({ type: "discard-spool", file: e.file, reason: "今日の開催日ではない" });
     else if (f.botRun.running) out.push({ type: "discard-spool", file: e.file, reason: "bot-run は実行中（リースが二重起動を防ぐ）" });
-    else out.push({ type: "launch-bot-run", file: e.file, date, trigger: e.request.params.trigger ?? "SCHEDULER" });
+    else if (!launched) {
+      out.push({ type: "launch-bot-run", file: e.file, date, trigger: e.request.params.trigger ?? "SCHEDULER" });
+      launched = true;
+    }
   }
   if (!raceday || f.racedayDone.includes(today)) return out;
   // 開催日の定期の判断（calendar-check）。今日の結果が「終わった」で bot-run も動いていなければ後処理（照合・予定の書出し）

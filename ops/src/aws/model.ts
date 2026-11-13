@@ -140,6 +140,8 @@ export const RequestSchema = z.discriminatedUnion("action", [
       minutes: z.number().int().min(10).max(240),
       actor: z.string().min(1).max(100),
       reason: shortText.default("閲覧"),
+      /** 本人が要求した時刻（GitHub の実行の作成時刻）。閲覧の終了の要求との前後の比較に使う（実行の待ちで逆転しないように）。 */
+      requested_at: ts.optional(),
     })
     .strict(),
   z.object({ action: z.literal("view-end"), actor: z.string().min(1).max(100), requested_at: ts }).strict(),

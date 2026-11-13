@@ -20,6 +20,7 @@ export const controller_function = out.controllerFunction;
 export const state_bucket = out.stateBucket;
 export const beacon_url = out.beaconUrl;
 export const ops_role_arn = out.opsRoleArn;
+export const host_command_document = out.hostCommandDocument;
 export const web_push_role_arn = out.webPushRoleArn;
 export const ecr_registry = out.ecrRegistry;
 export const cognito_issuer = out.cognitoIssuer;

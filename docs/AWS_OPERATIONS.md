@@ -17,7 +17,7 @@
 | U9 | web の environment `release` の変数 `AWS_ACCOUNT_ID`・`AWS_PUSH_ROLE_ARN` | `enableWebPush=true` で Pulumi がロールを作った後（**IAM の変更なので本人の承認**） |
 | U10 | Windows エージェントの設定の変更（ビーコンの URL・検証鍵・送信先） | §1.6 |
 | U11 | Cognito の初回ログイン（仮パスワードはメールで届く → 本パスワード → TOTP の登録） | 認証アプリ（Google Authenticator 等）。復旧はメール |
-| U12 | 予算の通知の宛先（`budgetEmail`）と金額（`budgetUsd`。既定 $20） | **通知だけで、止まらない** |
+| U12 | 予算の通知の宛先（`budgetEmail`）と金額（`budgetUsd`。既定 $20） | **通知だけで、止まらない**。同じ宛先に制御の失敗のアラーム（SNS）のメールが届く: 最初に届く「購読の確認」のリンクを開く |
 
 ## 1. 初回の構築（本人の承認の後）
 1.1 **事前の確認（課金なし）**: infra の CI が緑、`npm ci --ignore-scripts && npm test`（mock・合成データ）が通ること。
@@ -42,7 +42,7 @@ pulumi config set jrabot-aws:appEnv '{"CALENDAR_WATCH_START_MINUTES":"…", …,
 ```
 1.3 **確認と適用**: `pulumi preview`（作るものの一覧。課金リソース: EC2・EBS 2 本・S3 4 本・ECR 5・Lambda・Scheduler・Cognito・Route 53 のゾーン・Budgets・DLM）→ 本人が内容を確認 → `pulumi up`。EC2 は作成と同時に起動するが、起動目的が無いので制御が数分で止める（『制御を通さない起動』の通知が出るのは正常。版も秘密もまだ無いのでアプリは動かない）。
 1.4 **GitHub の変数**（infra の environment `ops`。値は `pulumi stack output`）:
-`AWS_OPS_ROLE_ARN`=ops_role_arn、`AWS_CONTROLLER_FUNCTION`=controller_function、`AWS_INSTANCE_ID`=instance_id、`AWS_STATE_BUCKET`=state_bucket、`AWS_SSM_PREFIX`=`/jra-bot`、`AWS_HOST_IMAGES`=host_images（JSON のまま）、`AWS_ARCH`=arch。
+`AWS_OPS_ROLE_ARN`=ops_role_arn、`AWS_CONTROLLER_FUNCTION`=controller_function、`AWS_INSTANCE_ID`=instance_id、`AWS_HOST_COMMAND_DOCUMENT`=host_command_document、`AWS_STATE_BUCKET`=state_bucket、`AWS_SSM_PREFIX`=`/jra-bot`、`AWS_HOST_IMAGES`=host_images（JSON のまま）、`AWS_ARCH`=arch。
 1.5 **秘密の作成**: Actions → `aws-secrets-init`（DB のパスワード・Cookie・ペッパー・KEK・ビーコンとモデルの署名鍵を SSM に作る。**既にあるものは上書きしない**）。続けて U6 の Discord。
 1.6 **イメージ**: web で `enableWebPush=true`（`pulumi config set jrabot-aws:enableWebPush true` → `pulumi up`）→ web の release（target=aws・arch=arm64）→ リリースの `release-manifest.json` の URL と SHA-256 で §6 の `aws-deploy`。
 1.7 **Windows エージェント**（U10）: `aws-status` の「ビーコンの検証鍵」（kid と公開鍵）、`beacon_url`（出力）、送信先 `https://<siteHost>`（`/v1/agent/*`）をエージェントの設定に入れる。エージェントのトークンの登録は dashboard の管理画面（web CONTRACTS §8）。
@@ -86,12 +86,12 @@ Actions → **aws-batch**（task・args・minutes・reason）。開催日の処�
 4. Windows エージェントの設定を AWS（ビーコンの URL・検証鍵・送信先）に変える（§1.7）。
 5. AWS の開催日の起動を有効にする（skip を外す: `aws-raceday add`）。最初の開催日は aws-status と Discord で確認。
 6. **GCP は消さない**（Cloud SQL を停止・Scheduler を停止のまま。費用は CLOUD_COSTS §10.3）。AWS で 2〜4 開催日を問題なく終えてから、GCP の削除を本人が判断する（`terraform destroy` 等は本人）。
-- **切戻し**: AWS の `aws-stop`（stop-all）→ 制御の Scheduler を止める（`aws scheduler update-schedule … --state DISABLED` を CloudShell で。または Pulumi で）→ AWS の最新のバックアップを GCP に戻すか（AWS で増えたデータを持ち帰る）、GCP の停止時点から再開 → エージェントの設定を GCP に戻す → GCP の `ops-start`。
+- **切戻し**: AWS の `aws-stop`（stop-all）→ 制御の Scheduler を止める（`aws scheduler update-schedule … --state DISABLED` を CloudShell で。または Pulumi で。止めると『定期実行が来ない』のアラームのメールが届く）→ AWS の最新のバックアップを GCP に戻すか（AWS で増えたデータを持ち帰る）、GCP の停止時点から再開 → エージェントの設定を GCP に戻す → GCP の `ops-start`。
 - 同時に動かさない仕組み: 運用状態はクラウドごとに別。エージェントは設定した 1 つのビーコンしか見ない。bot の通知は各クラウドの bot-run だけが出す → **両方の開催日の起動を同時に有効にしない**ことを手順で守る（切替日に GCP を先に止める）。
 
 ## 8. バックアップ・復元
 - 自動: 停止のたび・deploy の前。手動: **aws-backup**。S3 `mysql/<JST の日付>/jrabot-<時刻>-<理由>.sql.gz`（SHA-256 をメタデータに記録して読み直して確認）。保持 35 日・旧版 7 日。EBS のスナップショット（週 1・2 世代）は予備。
-- 復元（実データなら本人の判断）: Session Manager でインスタンスに入り `sudo /opt/jrabot/bin/jrabot-host restore --key mysql/…/….sql.gz --confirm RESTORE-<その日付>`（直前に現状のバックアップを取る）→ status で確認。試験は CI の `aws-backup-restore`（合成データ）。
+- 復元（実データなら本人の判断）: **aws-view だけで起動した状態**（開催日・batch の起動目的が無い）で Session Manager からインスタンスに入り `sudo /opt/jrabot/bin/jrabot-host restore --key mysql/…/….sql.gz --confirm RESTORE-<その日付>`（直前に現状のバックアップを取る → dump の完全性を確認 → DB `jrabot` を作り直して流し込む。開催日・batch・ジョブが動いていれば拒否）→ status で確認。流し込みが途中で失敗したら、直前の pre-restore のバックアップで同じ手順を行う。試験は CI の `aws-backup-restore`（合成データ）。
 - データ用 EBS からの復元（S3 も使えないとき）: スナップショットからボリュームを作り、EC2 を止めて付け替える（コンソール。Pulumi の state と食い違うので、後で `pulumi import` か設定の更新が必要）。
 
 ## 9. 困ったとき
@@ -101,7 +101,9 @@ Actions → **aws-batch**（task・args・minutes・reason）。開催日の処�
 | 画面が開けない（証明書・名前） | status の url、`dig <siteHost>` | IP の更新は起動のたびに Lambda が行う（TTL 60 秒。1 時間ごとに書き直す）。証明書は初回の取得に数分 |
 | Cognito でログインできない | 本人のメールか・MFA | 管理者がコンソールでパスワードの再設定 |
 | 停止が clean=false | Discord・status の last_stop | 次の起動後に aws-backup で取り直す |
-| 「停止し忘れ」 | status の holds・auto_stop_at | aws-stop（stop-all） |
+| 「停止し忘れ」 | status の holds・auto_stop_at | aws-stop（stop-all）。制御が動かない場合もホストが 30 時間で自分で止まる |
+| アラームのメール（制御のエラー・定期実行が来ない） | CloudWatch のロググループ `/aws/lambda/<prefix>-controller` | 原因（権限・状態の破損）を直す。止まらない EC2 はコンソールで停止 |
+| 開催の計画が無い・古いの通知 | status | aws-view で一度起動して計画を更新する（NORMAL の間 6 時間ごとに書き出す）か、aws-raceday add |
 | ネットワークの範囲の違い（boot の失敗） | `docker network inspect jrabot` | 全コンテナを止めて `docker network rm jrabot` → `systemctl restart jrabot-boot` |
 | モデルの鍵の入替え | — | 新しい署名鍵を SSM に置く（旧い鍵で署名したモデルは再学習・再署名）。複数の検証鍵の併用は未対応（必要になったら web の CONTRACTS §5.1 に合わせて追加） |
 

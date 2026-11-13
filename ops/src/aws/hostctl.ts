@@ -27,6 +27,7 @@ import { type HostAction, type HostFacts, MYSQLDUMP_ARGS, parseJobResult, planHo
 import { type HostStatus, WorkloadsSchema } from "./model.js";
 import {
   assertPinned,
+  assertTrustedImages,
   type ContainerSpec,
   dockerRunArgs,
   type HostImages,
@@ -55,6 +56,9 @@ const HostConfigSchema = z.object({
   backup_bucket: z.string().min(3),
   models_bucket: z.string().min(3),
   ssm_prefix: z.string().regex(/^\/[A-Za-z0-9/_-]+$/),
+  ecr_registry: z.string().regex(/^\d{12}\.dkr\.ecr\.ap-northeast-1\.amazonaws\.com$/),
+  /** 連続稼働の上限（時間）。制御が動かない場合の最後の安全網（制御の上限 20 時間より長くする）。 */
+  max_uptime_hours: z.number().int().min(6).max(72).default(30),
   site_host: z.string().max(253),
   cognito_issuer: z.string().url(),
   cognito_client_id: z.string().min(1),
@@ -138,6 +142,7 @@ function images(): HostImages {
     oauth2Proxy: r.host_images["oauth2-proxy"],
   };
   assertPinned(img);
+  assertTrustedImages(img, config().ecr_registry);
   return img;
 }
 
@@ -310,7 +315,16 @@ async function execute(a: HostAction, cfg: HostConfig, status: Partial<HostStatu
       return;
     case "finish-raceday": {
       // その日の後処理: 結果・払戻の照合（reconcile）→ 先の予定の書出し → 終わりの記録（制御が RACEDAY の hold を外す）
-      botTask(cfg, "reconcile", [`--date=${a.date}`], { timeoutSec: 900 });
+      // 照合が失敗したら終わりにしない（hold は窓の終わりまで残り、15 分ごとに再試行する。失敗の通知は bot が出す）
+      const retry = join(VAR, `reconcile-retry-${a.date}`);
+      if (existsSync(retry) && Date.now() - Date.parse(readFileSync(retry, "utf8").trim()) < 15 * 60_000) return;
+      const rec = botTask(cfg, "reconcile", [`--date=${a.date}`], { timeoutSec: 900 });
+      if (rec.code !== 0) {
+        writeAtomic(retry, nowIso());
+        console.log(`reconcile が失敗（${rec.code}）。15 分後に再試行`);
+        return;
+      }
+      rmSync(retry, { force: true });
       await exportPlan(cfg);
       const done = readJsonFile(join(VAR, "raceday-done.json"), DoneFile) ?? [];
       writeAtomic(join(VAR, "raceday-done.json"), JSON.stringify([...done.filter((d) => d !== a.date), a.date].slice(-20)));
@@ -427,6 +441,12 @@ export async function backup(cfg: HostConfig, reason: string): Promise<string> {
 async function restore(cfg: HostConfig, key: string, confirm: string): Promise<void> {
   if (!/^mysql\/\d{4}-\d{2}-\d{2}\/jrabot-[0-9TZ]+-[a-z0-9-]*\.sql\.gz$/.test(key)) throw new HostError("キーの形式が不正");
   if (confirm !== `RESTORE-${key.slice(6, 16)}`) throw new HostError(`確認の文字列が違う（RESTORE-${key.slice(6, 16)} を指定する）`);
+  // 開催日・重い処理の最中は戻さない（書込み中のコンテナと重なると結果が壊れる）。閲覧だけの起動のときに行う
+  const ops = await readOps(cfg);
+  if (ops === undefined || ops.raceday || ops.batch)
+    throw new HostError("開催日・重い処理の起動目的があるとき（運用状態を読めないときも）は戻さない。閲覧だけの起動（aws-view）で行う");
+  for (const j of ["jrabot-botrun", "jrabot-batch"])
+    if (containerState(j) === "running") throw new HostError(`${j} が動いている間は戻さない`);
   await backup(cfg, "pre-restore");
   const obj = await clients.s3().send(new GetObjectCommand({ Bucket: cfg.backup_bucket, Key: key, ChecksumMode: "ENABLED" }));
   const bytes = await obj.Body?.transformToByteArray();
@@ -435,7 +455,13 @@ async function restore(cfg: HostConfig, key: string, confirm: string): Promise<v
     throw new HostError("バックアップのハッシュが一致しない（壊れている）");
   const file = join("/data", "backup", "restore.sql.gz");
   writeAtomic(file, bytes);
-  for (const c of ["jrabot-caddy", "jrabot-oauth2-proxy", "jrabot-dashboard", "jrabot-ingest"]) stop(c, 60);
+  // 完全な dump か（最後の行）を、DB を消す前に確かめる
+  if (run(["bash", "-o", "pipefail", "-c", `gzip -dc '${file}' | tail -c 300 | grep -q 'Dump completed'`], { timeoutSec: 600 }).code !== 0)
+    throw new HostError("バックアップが途中で切れている（Dump completed が無い）");
+  for (const c of ["jrabot-caddy", "jrabot-oauth2-proxy", "jrabot-dashboard", "jrabot-ingest", "jrabot-botrun", "jrabot-batch"])
+    stop(c, 60);
+  // 戻す前の版より新しい表を残さない（dump に無い表は消えないため）。利用者と権限は mysql の側にあるので残る。直前のバックアップは pre-restore
+  if (mysqlExec("DROP DATABASE IF EXISTS jrabot;").code !== 0) throw new HostError("DB を作り直せない");
   must(
     [
       "bash",
@@ -502,6 +528,13 @@ function readyOf(port: number): boolean {
 }
 
 async function tick(cfg: HostConfig): Promise<void> {
+  // 最後の安全網: 制御（Lambda）が動かなくても、連続稼働の上限を超えたら自分で排出して止まる（停止し忘れの費用を限る）
+  const uptimeHours = Number(readFileSync("/proc/uptime", "utf8").split(" ")[0]) / 3600;
+  if (Number.isFinite(uptimeHours) && uptimeHours > cfg.max_uptime_hours && !existsSync(join(RUN, "drained"))) {
+    console.log(`稼働 ${uptimeHours.toFixed(1)} 時間が上限 ${cfg.max_uptime_hours} 時間を超えた。排出して停止する`);
+    await drain(cfg, {});
+    return;
+  }
   const ops = await readOps(cfg);
   const prepared = existsSync(join(RUN, "prepared"));
   const facts: HostFacts = {
@@ -553,6 +586,8 @@ function envFile(name: string, entries: Readonly<Record<string, string | undefin
 
 /** 起動時の準備。秘密（SSM）→ tmpfs、内部トークンは起動ごとに新しく作る。DB の利用者を揃え、スキーマが最新でなければアプリを動かさない。 */
 async function boot(cfg: HostConfig, releaseKey: string = RELEASE_KEY): Promise<void> {
+  // データの EBS が付いていないと、MySQL がルートのディスクに空の DB を作ってしまう（バックアップも空になる）
+  if (run(["mountpoint", "-q", "/data"], { timeoutSec: 10 }).code !== 0) throw new HostError("/data（データの EBS）がマウントされていない");
   for (const d of [join(RUN, "secrets"), join(RUN, "env")]) mkdirSync(d, { recursive: true, mode: 0o750 });
   mkdirSync(VAR, { recursive: true, mode: 0o700 });
   mkdirSync(SPOOL, { recursive: true, mode: 0o770 });

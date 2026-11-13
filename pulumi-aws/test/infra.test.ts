@@ -173,6 +173,13 @@ describe("AWS の資源（mock）", () => {
       ),
     );
     assert.doesNotMatch(ops, /ec2:StartInstances|ec2:StopInstances|ec2:\*/);
+    assert.doesNotMatch(ops, /AWS-RunShellScript/, "任意のシェルを送れない（専用のドキュメントだけ）");
+    assert.doesNotMatch(ops, /ssm:GetParameter/, "秘密の値を読めない");
+    const doc = JSON.parse(String(of("aws:ssm/document:Document")[0]?.inputs["content"])) as {
+      parameters: { action: { allowedValues: string[] }; args: { allowedPattern: string } };
+    };
+    assert.deepEqual(doc.parameters.action.allowedValues, ["deploy", "backup", "run-batch"]);
+    assert.equal(doc.parameters.args.allowedPattern, "^[A-Za-z0-9=.,_:/ -]{0,600}$");
     const trust = String(
       await resolve(of("aws:iam/role:Role").find((r) => r.name === "jrabot-gha-ops")?.inputs["assumeRolePolicy"] as pulumi.Input<string>),
     );
@@ -194,6 +201,13 @@ describe("AWS の資源（mock）", () => {
     assert.equal(of("aws:ssm/parameter:Parameter")[0]?.inputs["type"], "SecureString");
     const client = of("aws:cognito/userPoolClient:UserPoolClient")[0]?.inputs ?? {};
     assert.deepEqual(client["callbackUrls"], ["https://jrabot.example.com/oauth2/callback"]);
+  });
+
+  it("制御の失敗（エラーが続く・定期実行が来ない）をメールで知らせる。バックアップはバージョニング", () => {
+    const alarms = of("aws:cloudwatch/metricAlarm:MetricAlarm").map((r) => r.inputs["metricName"]);
+    assert.deepEqual(alarms.sort(), ["Errors", "Invocations"]);
+    assert.equal(of("aws:sns/topicSubscription:TopicSubscription")[0]?.inputs["protocol"], "email");
+    assert.ok(of("aws:s3/bucketVersioningV2:BucketVersioningV2").some((r) => r.name.includes("backups")));
   });
 
   it("予算の通知を作る（強制停止ではない）", () => {
