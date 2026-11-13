@@ -121,7 +121,7 @@ export async function secureParameter(ssm: SSMClient, name: string): Promise<str
     const r = await ssm.send(new GetParameterCommand({ Name: name, WithDecryption: true }));
     return r.Parameter?.Value;
   } catch (e) {
-    if (typeof e === "object" && e !== null && "name" in e && (e as { name: string }).name === "ParameterNotFound") return undefined;
+    if (typeof e === "object" && e !== null && "name" in e && e.name === "ParameterNotFound") return undefined;
     throw e;
   }
 }

@@ -50,7 +50,7 @@
 - 運用状態（web CONTRACTS §7 の ops-state）は S3 `state/ops-state.json`。GCP と同じ `mode`（STOPPED・STARTING・NORMAL・STOPPING）に、AWS の節 `aws`（起動目的の一覧・停止の記録など）と、アプリに渡す **`workloads {raceday, batch}`**（web D-282）を足した。
 - **起動目的（hold）**: `VIEW`（閲覧）・`RACEDAY`（開催日）・`BATCH`（重い処理）・`MAINTENANCE`（deploy）。それぞれ期限を持つ。hold が 1 つでもあれば起動し、全部無くなれば停止する。
   - `VIEW`: 本人の手動。同じ要求の再実行は「今から N 分」に延長（短くしない）。`view-end` は、その実行より後に延長された VIEW は外さない（古い停止の要求で、新しい閲覧を止めない）。
-  - `RACEDAY`: アプリが JRA の開催予定から作る計画（`--task=calendar-plan` → S3 `control/calendar-plan.json`。web D-283）と手動の登録から、**最初の発走の 240 分前〜最後の発走の 150 分後**に自動で作る（設定 `racedayLeadMinutes`・`racedayTailMinutes`）。ホストが「その日の処理が終わった」と報告したら外す（終了を待たずに停止しない・終わったら早めに止める）。
+  - `RACEDAY`（同時に 3 日まで。発走時刻がその日〔JST〕の外なら既定の時刻を使うので、窓は 1 日 + 前後の余裕に収まる）: アプリが JRA の開催予定から作る計画（`--task=calendar-plan` → S3 `control/calendar-plan.json`。web D-283）と手動の登録から、**最初の発走の 240 分前〜最後の発走の 150 分後**に自動で作る（設定 `racedayLeadMinutes`・`racedayTailMinutes`）。ホストが「その日の処理が終わった」と報告したら外す（終了を待たずに停止しない・終わったら早めに止める）。
   - `BATCH`: 開催日の処理中は拒否（開催日が優先・メモリ）。
 - **workloads**: `raceday` は RACEDAY の hold があり NORMAL/STARTING のときだけ true、`batch` は BATCH の hold があり RACEDAY が無いときだけ true。アプリの bot の Job は `OPS_WORKLOAD_GATE=required` で、**raceday=false なら bot-run・通知のタスクを起動しない**（閲覧だけの起動で Discord に通知しない）。
 - **ビーコン**（Windows エージェント向け。web CONTRACTS §7.2）: NORMAL は「RACEDAY で、ホストが ingest の準備完了を報告している」ときだけ。閲覧だけの起動ではエージェントに送らせない。
@@ -69,13 +69,14 @@
 | STOPPING | EC2 が stopped | STOPPED | 排出・バックアップの成否を記録（失敗は通知） |
 | STOPPING | 25 分で排出が終わらない／さらに 10 分 | （そのまま） | StopInstances／強制停止・通知 |
 | STOPPING | EC2 が stopping のまま 35 分（排出 25 + 停止 10） | （そのまま） | 強制停止・通知 |
-| 任意 | 連続稼働が `maxRunningHours`（20 時間）を超えた（**開催日の hold がある間は除く**。開催日の窓は計画で上限がある） | hold を外す → STOPPING | 通知（停止し忘れの安全網） |
+| 任意 | 連続稼働が `maxRunningHours`（20 時間）を超えた（開催日の hold がある間は**絶対の上限 36 時間**まで待つ） | hold を外す → STOPPING | 通知（停止し忘れの安全網） |
 | 任意 | 開催の計画が無い・10 日より古い | 計画が読めない間は動いている開催日の hold を期限まで保つ | 通知（1 日 1 回） |
 
 - 二重の起動・起動中の再要求: hold の upsert なので冪等（同じ目的の hold は 1 つ）。起動中の停止要求・停止中の起動要求: どちらも次の収束で正しい向きになる（停止中に hold が来たら、EC2 が stopped になった時点で STOPPED → 次の実行で STARTING）。
 - 古い自動停止: hold の期限は「延長した時刻」で決まり、停止は「hold が無い」ことでしか起きない。`view-end` は `requested_at` より後に更新された VIEW を外さない。
 - 閲覧の期限で、開催日の処理・batch を止めない（それぞれ別の hold）。
-- 運用状態が壊れていたら何もしない（推測で書き換えない）。**書く前にも検査する**（上限を超える状態を書かない。手動の開催日 30 件・飛ばす日 60 件・日付は昨日〜90 日先）。ホストの報告が壊れていたら「無い」として扱う。
+- 運用状態が壊れていたら何もしない（推測で書き換えない）。**書く前にも検査し、通らなければ例外**（Lambda のエラー → アラーム。黙って止まらない）。状態は上限を超えないように作る（手動の開催日 30 件・飛ばす日 60 件〔昨日より前は捨てる〕・開催日の hold 3 つ・日付は昨日〜90 日先）。
+- **定期実行の失敗**（4 回の競合・起動・停止・DNS・ビーコン・通知の失敗）は例外にする（アラーム）。送れなかった一度だけの警告は印を外して次の実行で送り直す。再実行（Re-run）の要求は元の時刻を使わない。ホストの報告が壊れていたら「無い」として扱う。
 - 要求の時刻は GitHub の実行の作成時刻（runner の待ちで閲覧の延長と終了の順序が逆転しない）。
 - **DNS**: 動いている間は公開 IP、止まったら文書用のアドレス 192.0.2.1（手放した IP を他人が拾っても、この名前に届かない・証明書を取らせない）。1 時間ごとに書き直す。
 
@@ -86,7 +87,7 @@
   - `tick`（1 分ごと）: 判断は `host.ts` の `planHost`（純粋）。閲覧だけなら MySQL・dashboard・oauth2-proxy・Caddy だけ。開催日は ingest と calendar-check（5 分ごと）→ spool（`JOB_LAUNCHER=spool`。web D-283）で bot-run。STOPPING を見たら排出。
   - boot・tick・deploy・backup・restore は `flock` で同時に動かさない（run-batch は長いので除外。排出は tick が止める）。
   - `/data`（データの EBS）がマウントされていなければ起動しない（空の DB を作らない）。spool の起動は 1 回の実行で 1 つまで。照合（reconcile）が失敗した開催日は終わりにしない（15 分ごとに再試行）。
-  - **ホストの稼働の上限**（`max_uptime_hours` 既定 30 時間）: 制御が動かなくても自分で排出して止まる。
+  - **ホストの稼働の上限**（`max_uptime_hours` 既定 30 時間）: 制御が止まっているように見える（運用状態が 3 時間以上書かれていない。動いている間は 1 時間ごとに書かれる）ときだけ、自分で排出して止まる（制御が動いていれば停止は制御に任せる）。
 - コンテナ（`services.ts`）: `--cap-drop ALL`・`no-new-privileges`・読取り専用（アプリ）・メモリ上限（スワップなし）・ログの上限・digest で固定。公開ポートは Caddy の 80/443 と 127.0.0.1 だけ（MySQL はどこにも公開しない）。
 - **IMDS の遮断**: インスタンスのロールはアプリ（S3 の運用状態・モデル）のためにコンテナから使えるようにしている（ホップ 2）。インターネットに面する Caddy・oauth2-proxy と MySQL は IMDS に届かない固定 IP（172.30.0.128/25）で動かし、`DOCKER-USER` の規則で 169.254.169.254 への通信を落とす。**残るリスク**: アプリのコンテナ（dashboard・ingest・bot）が乗っ取られると、インスタンスのロールの権限に届く: SSM の秘密の読取り（ビーコンの署名鍵は明示的に拒否）、ホストの報告・開催の計画の偽造（早すぎる停止・余計な起動 = 費用）、版のファイルの書換え。版のファイルについては、ホストが**このアカウントの ECR の jra-bot/<名前> と許可したサードパーティの出どころ（tag + digest）のイメージだけ**を動かす（`assertTrustedImages`）ので、別のイメージは動かせない（古い版への差し替えは残る）。根本の対策（アプリの資格情報をホストのロールから分ける）は後続の課題。
 - メモリ（上限の合計）: 常駐（MySQL 448・dashboard 288・ingest 288・oauth2-proxy 64・Caddy 64 MiB）+ bot-run 384 + タスク 256 = 1,792 MiB ≤ 1,810（試験 `aws-services`）。batch・ml-train（1,024 MiB）は開催日には動かさない。
@@ -106,7 +107,7 @@
 ## 7. データ保護
 - データ用 EBS は Pulumi で `protect`・`retainOnDelete`、EC2 は `disableApiTermination`、user data はファイルシステムがあれば初期化しない。コンテナの作り直し・EC2 の停止で消えない。
 - バックアップ: 停止のたび・deploy の前・restore の前・手動（`aws-backup`）に mysqldump `--single-transaction`（整合）→ gzip → S3（`IfNoneMatch` で上書きしない・SHA-256 を記録して読み直して確認）。**失敗を成功と報告しない**（ホストの報告 → 制御の `last_stop.backup_ok` → 通知）。保持 35 日（ライフサイクル）・旧版 7 日。ホストのロールは削除できない。
-- 復元: `jrabot-host restore --key … --confirm RESTORE-<日付>`（直前に現状のバックアップ。開催日・重い処理の起動目的があるとき・ジョブが動いているときは拒否。dump の最後の行を確かめてから DB を作り直して流し込む）。合成データで dump → 別の MySQL へ復元 → 全表のチェックサム一致を CI で確認（`ops/it/backup-restore.mjs`。Flyway の実スキーマ 38 表でも確認）。
+- 復元: `jrabot-host restore --key … --confirm RESTORE-<日付>`（**保守の起動目的が 90 分以上残っている NORMAL** のときだけ。開催日・重い処理・ジョブの最中は拒否。直前に現状のバックアップ → dump の最後の行を確認 → DB を作り直して流し込む。流し込みの失敗は直前のバックアップのキーを表示）。合成データで dump → 別の MySQL へ復元 → 全表のチェックサム一致を CI で確認（`ops/it/backup-restore.mjs`。Flyway の実スキーマ 38 表でも確認）。
 - 実データ・秘密・学習済みモデルを Git に入れない。**COMP-4 の回答までは実データを AWS に入れない**（web UNRESOLVED）。
 
 ## 8. 版数（固定）

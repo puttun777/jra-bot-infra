@@ -369,6 +369,7 @@ describe("Lambda の 1 回分（runController）: CAS の競合・副作用・�
         if ((stored?.etag ?? undefined) !== etag) throw new ConflictError("412");
         stored = { raw: structuredClone(next), etag: `e${++n}` };
         calls.push(`write:${next.mode}:${next.seq}`);
+        return stored.etag;
       },
       appendHistory: async () => {},
       readHost: async () => h,
@@ -548,6 +549,7 @@ describe("レビューの指摘の修正（2026-11-13）", () => {
       readState: async () => ({ raw: structuredClone(st), etag: "e0" }),
       writeState: async () => {
         wrote = true;
+        return "e1";
       },
       appendHistory: async () => {},
       readHost: async () => undefined,
@@ -560,9 +562,107 @@ describe("レビューの指摘の修正（2026-11-13）", () => {
       upsertDns: async () => {},
       notify: async () => {},
     };
-    const r = await runController(ports, { action: "maintenance", minutes: 30, actor: "t", reason: "r" }, at(1), cfg, undefined);
-    assert.equal(r.ok, false);
-    assert.match(r.message, /検査に失敗/);
+    // 黙って止まらない: 例外（Lambda のエラー → アラーム）にして、書かない
+    await assert.rejects(
+      runController(ports, { action: "maintenance", minutes: 30, actor: "t", reason: "r" }, at(1), cfg, undefined),
+      /検査に失敗/,
+    );
     assert.equal(wrote, false);
+  });
+});
+
+describe("再レビューの指摘の修正（2026-11-13）", () => {
+  const dayPlan = (n: number, lastPost: (d: string) => string | null = () => null): CalendarPlan => ({
+    schema_version: 1,
+    tenant_id: 1,
+    generated_at: T0,
+    days: Array.from({ length: n }, (_, i) => {
+      const d = new Date(Date.parse("2026-11-14T00:00:00Z") + i * 86_400_000).toISOString().slice(0, 10);
+      return { date: d, verdict: "CONFIRMED" as const, first_post: null, last_post: lastPost(d) };
+    }),
+  });
+
+  it("発走時刻がその日の外の計画でも、窓は 1 日 + 前後の余裕に収まる（何日も起動し続けない）", () => {
+    const plan = dayPlan(1, () => "2026-12-31T06:00:00Z");
+    const s = step(initialAwsState(at(-300)), T0, stopped, undefined, plan).state;
+    const h = s.aws.holds.find((x) => x.purpose === "RACEDAY");
+    assert.ok(h !== undefined);
+    assert.ok(Date.parse(h.expires_at) <= Date.parse("2026-11-14T15:00:00Z") + cfg.racedayTailMinutes * 60_000, h.expires_at);
+    assert.throws(
+      () =>
+        applyRequest(
+          initialAwsState(T0),
+          { action: "raceday-add", date: "2026-11-15", first_post: null, last_post: "2026-11-20T06:00:00Z", actor: "t" },
+          T0,
+        ),
+      RequestRejected,
+    );
+  });
+
+  it("開催日の hold があっても、連続稼働が絶対の上限（36 時間）を超えたら止める", () => {
+    const plan = dayPlan(1);
+    const s = step(initialAwsState(at(-300)), T0, stopped, undefined, plan).state;
+    s.mode = "NORMAL";
+    s.desired.mode = "NORMAL";
+    s.aws.running_since = at(-36 * 60 - 1);
+    const r = step(s, at(1), running(), host({ reported_at: at(1) }), plan);
+    assert.equal(r.state.mode, "STOPPING");
+    assert.ok(r.state.aws.skip_dates.includes("2026-11-14"));
+  });
+
+  it("定期実行の経路でも状態の上限を超えない（開催日の hold は 3 つまで・飛ばす日は 60 件まで）", () => {
+    let s = initialAwsState(T0);
+    s.aws.skip_dates = Array.from({ length: 60 }, (_, i) =>
+      new Date(Date.parse("2026-11-15T00:00:00Z") + i * 86_400_000).toISOString().slice(0, 10),
+    );
+    s = applyRequest(s, { action: "view", minutes: 60, actor: "t", reason: "閲覧" }, T0).state;
+    s = applyRequest(s, { action: "stop-all", actor: "t", reason: "r", requested_at: at(1) }, at(1)).state;
+    assert.equal(s.aws.skip_dates.length, 60);
+    assert.ok(s.aws.skip_dates.includes("2026-11-14"), "今日は入る（古いものから捨てる）");
+    const r = step(s, at(2), stopped);
+    assert.ok(AwsOpsStateSchema.safeParse(r.state).success);
+  });
+
+  it("stop-all は外した件数を返す", () => {
+    let s = applyRequest(initialAwsState(T0), { action: "view", minutes: 60, actor: "t", reason: "閲覧" }, T0).state;
+    s = applyRequest(s, { action: "maintenance", minutes: 60, actor: "t", reason: "m" }, T0).state;
+    const r = applyRequest(s, { action: "stop-all", actor: "t", reason: "r", requested_at: at(1) }, at(1));
+    assert.match(r.message, /2 件外した/);
+  });
+
+  it("送れなかった一度だけの警告は印を外して次の実行で送り直す。定期実行の失敗は例外（アラーム）", async () => {
+    const st = initialAwsState(T0);
+    st.mode = "STOPPED";
+    let stored: { raw: unknown; etag: string } = { raw: structuredClone(st), etag: "e0" };
+    let n = 0;
+    let notified = 0;
+    const ports: ControllerPorts = {
+      readState: async () => structuredClone(stored),
+      writeState: async (next, etag) => {
+        if (etag !== stored.etag) throw new ConflictError("412");
+        stored = { raw: structuredClone(next), etag: `e${++n}` };
+        return stored.etag;
+      },
+      appendHistory: async () => {},
+      readHost: async () => undefined,
+      readPlan: async () => undefined, // 計画が無い → 警告
+      readBeacon: async () => ({ mode: "STOPPED" }),
+      describe: async () => stopped,
+      start: async () => {},
+      stop: async () => {},
+      writeBeacon: async () => {},
+      upsertDns: async () => {},
+      notify: async () => {
+        notified++;
+        throw new Error("Webhook が未設定");
+      },
+    };
+    const r = await runController(ports, { action: "tick" }, at(1), cfg, undefined);
+    assert.equal(notified, 1);
+    assert.ok(r.errors.some((e) => e.startsWith("notify:")));
+    const saved = AwsOpsStateSchema.parse(stored.raw);
+    assert.ok(!saved.aws.alerted.some((k) => k.startsWith("plan-")), "印を外す（次の実行で送り直す）");
+    await runController(ports, { action: "tick" }, at(6), cfg, undefined);
+    assert.equal(notified, 2, "送り直す");
   });
 });

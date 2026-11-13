@@ -33,7 +33,8 @@ import {
 /** 制御が外部に対して行う操作（試験は偽物を渡す）。 */
 export interface ControllerPorts {
   readState(): Promise<{ raw: unknown; etag: string } | undefined>;
-  writeState(next: AwsOpsState, etag: string | undefined): Promise<void>;
+  /** 書けたら新しい ETag を返す（警告の印の付け直しに使う）。 */
+  writeState(next: AwsOpsState, etag: string | undefined): Promise<string>;
   appendHistory(name: string, state: AwsOpsState): Promise<void>;
   readHost(): Promise<unknown>;
   readPlan(): Promise<unknown>;
@@ -96,20 +97,16 @@ export async function runController(
     if (effects.beacon !== undefined)
       committed = { ...next, beacon: { seq: state.seq + 1, mode: effects.beacon, updated_at: nowIso, kid: next.beacon?.kid ?? "" } };
     const changed = current === undefined || !canonicalEqual(state, committed);
+    let etag = current?.etag;
     if (changed) {
       committed = S.bump(committed) as AwsOpsState;
       // 書く前に検査する（上限を超えた状態を書くと、以後の実行がすべて読めずに失敗し、自動停止も止まる）
+      // 失敗は例外（Lambda のエラー → CloudWatch のアラーム → メール。黙って止まらない）。reconcile は上限を超えないように作ってあるので、ここに来るのは不具合
       const valid = AwsOpsStateSchema.safeParse(committed);
-      if (!valid.success)
-        return {
-          ok: false,
-          message: `運用状態の検査に失敗したので書かない: ${valid.error.issues[0]?.path.join(".") ?? "?"}`,
-          summary: summarize(state, host, instance, nowIso, siteUrl),
-          errors,
-        };
+      if (!valid.success) throw new Error(`運用状態の検査に失敗したので書かない: ${valid.error.issues[0]?.path.join(".") ?? "?"}`);
       if (effects.beacon !== undefined && committed.beacon !== null && committed.beacon !== undefined) committed.beacon.seq = committed.seq;
       try {
-        await ports.writeState(committed, current?.etag);
+        etag = await ports.writeState(committed, current?.etag);
       } catch (e) {
         if (e instanceof ConflictError || e instanceof UnknownOutcomeError) {
           errors.push(`attempt ${attempt}: ${e.message}`);
@@ -145,7 +142,21 @@ export async function runController(
       const mode = effects.beacon;
       await run("beacon", () => ports.writeBeacon(mode, committed.seq, nowIso));
     }
-    for (const n of effects.notify) await run("notify", () => ports.notify(n.title, n.body));
+    const unsent: string[] = [];
+    for (const n of effects.notify) {
+      const before = errors.length;
+      await run("notify", () => ports.notify(n.title, n.body));
+      if (errors.length > before && n.key !== undefined) unsent.push(n.key);
+    }
+    // 送れなかった一度だけの警告は印を外す（次の実行で送り直す）。書けなくても次の実行の判断は変わらない
+    if (unsent.length > 0 && changed && etag !== undefined) {
+      const rearmed = { ...committed, aws: { ...committed.aws, alerted: committed.aws.alerted.filter((k) => !unsent.includes(k)) } };
+      try {
+        await ports.writeState(S.bump(rearmed) as AwsOpsState, etag);
+      } catch (e) {
+        errors.push(`rearm: ${errorMessage(e).slice(0, 120)}`);
+      }
+    }
     return {
       ok: true,
       message: applied.message,
@@ -189,9 +200,7 @@ export async function handler(event: unknown): Promise<ControllerResult> {
   const r53 = clients.route53();
   const ports: ControllerPorts = {
     readState: () => state.read("state/ops-state.json"),
-    writeState: async (next, etag) => {
-      await state.write("state/ops-state.json", next, etag);
-    },
+    writeState: (next, etag) => state.write("state/ops-state.json", next, etag),
     appendHistory: async (name, st) => {
       await state.write(`history/${name}.json`, st, undefined);
     },
@@ -235,5 +244,8 @@ export async function handler(event: unknown): Promise<ControllerResult> {
   console.log(
     JSON.stringify({ action: request.action, ok: result.ok, message: result.message, mode: result.summary["mode"], errors: result.errors }),
   );
+  // 定期実行の失敗（4 回の競合・起動・停止・DNS・ビーコン・通知の失敗）は例外にする: Lambda のエラーの数でアラームが鳴る（黙って止まらない）
+  if (request.action === "tick" && (!result.ok || result.errors.some((e) => /^(start|stop|dns|beacon|notify):/.test(e))))
+    throw new Error(`制御の定期実行が失敗: ${result.message || result.errors.join(" / ").slice(0, 300)}`);
   return result;
 }

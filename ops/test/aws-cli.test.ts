@@ -122,6 +122,8 @@ describe("要求の時刻・ホストのコマンドの引数", () => {
     const fail: typeof fetch = async () => new Response("no", { status: 403 });
     assert.match(await dispatchedAt(env, fail), /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z$/);
     assert.match(await dispatchedAt({}, ok), /^\d{4}-\d{2}-\d{2}T/, "GitHub の外では今の時刻");
+    assert.notEqual(await dispatchedAt({ ...env, GITHUB_RUN_ATTEMPT: "2" }, ok), "2026-11-13T00:00:00Z", "再実行は元の時刻を使わない");
+    assert.equal(await dispatchedAt({ ...env, GITHUB_RUN_ATTEMPT: "1" }, ok), "2026-11-13T00:00:00Z");
   });
 
   it("ホストのコマンドの引数はシェルの記号を含められない（SSM のドキュメントの allowedPattern と同じ）", () => {

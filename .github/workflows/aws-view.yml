@@ -29,7 +29,6 @@ jobs:
     env:
       AWS_ROLE_ARN: ${{ vars.AWS_OPS_ROLE_ARN }}
       CONTROLLER_FUNCTION: ${{ vars.AWS_CONTROLLER_FUNCTION }}
-      GITHUB_TOKEN: ${{ github.token }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -38,6 +37,7 @@ jobs:
       - name: 閲覧の起動（受付 → 準備完了の確認）
         working-directory: ops
         env:
+          GITHUB_TOKEN: ${{ github.token }} # この実行の作成時刻を読むだけ（actions: read）
           MINUTES: ${{ inputs.minutes }}
         run: |
           args=(view --minutes "$MINUTES")

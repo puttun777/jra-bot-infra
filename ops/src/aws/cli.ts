@@ -3,6 +3,7 @@
  *
  *   aws view --minutes 60 [--wait]          閲覧用の起動（bot・通知・重い処理は始めない）。--wait で準備完了と接続先を待つ
  *   aws view-end                            閲覧の終了（この実行より後に延長した閲覧は止めない）
+ *   aws maintenance --minutes 180 --reason R [--wait]   保守（restore 等）のための起動（bot・通知は動かさない。期限で止まる）
  *   aws status                              状態（EC2・アプリの準備・起動目的・bot・自動停止の予定・バックアップ）
  *   aws raceday-add --date D [--first-post T --last-post T] / raceday-skip --date D --reason R
  *   aws batch --minutes N --reason R [--wait]   重い処理の起動（開催日の処理中は拒否）
@@ -148,7 +149,7 @@ async function secretsInit(ssm: SSMClient, prefix: string): Promise<string[]> {
       await ssm.send(new PutParameterCommand({ Name: `${prefix}/${name}`, Value: value, Type: "SecureString", Overwrite: false }));
       created.push(name);
     } catch (e) {
-      if (!(typeof e === "object" && e !== null && "name" in e && (e as { name: string }).name === "ParameterAlreadyExists")) throw e;
+      if (!(typeof e === "object" && e !== null && "name" in e && e.name === "ParameterAlreadyExists")) throw e;
     }
   };
   for (const n of SECRET_NAMES)
@@ -188,7 +189,7 @@ async function ssmRun(
       );
       id = sent.Command?.CommandId;
     } catch (e) {
-      if (!(typeof e === "object" && e !== null && "name" in e && (e as { name: string }).name === "InvalidInstanceId")) throw e;
+      if (!(typeof e === "object" && e !== null && "name" in e && e.name === "InvalidInstanceId")) throw e;
       await new Promise((r) => setTimeout(r, 15_000));
     }
   }
@@ -300,6 +301,9 @@ async function waitRunning(lambda: LambdaClient, fn: string, minutes: number, sl
 export async function dispatchedAt(env: NodeJS.ProcessEnv, fetchFn: typeof fetch = fetch): Promise<string> {
   const now = new Date().toISOString().replace(/\.\d{3}Z$/, "Z");
   const id = env["GITHUB_RUN_ID"];
+  // 再実行（Re-run）は元の実行の作成時刻のままなので使わない（古い時刻の終了・全停止で何も外れなくなる）
+  const attempt = env["GITHUB_RUN_ATTEMPT"];
+  if (attempt !== undefined && attempt !== "1") return now;
   const repo = env["GITHUB_REPOSITORY"];
   const token = env["GITHUB_TOKEN"];
   const api = env["GITHUB_API_URL"] ?? "https://api.github.com";
@@ -389,6 +393,13 @@ export async function main(argv: readonly string[], env: NodeJS.ProcessEnv = pro
               ? "利用できます"
               : "15 分で準備が完了しなかった（status で確認）",
         });
+      }
+      case "maintenance": {
+        // 保守（restore など）のための起動。閲覧と同じく bot・通知・重い処理は動かさない。期限で自動で止まる（最大 180 分）
+        if (a.reason === "") throw new CliError("--reason が必要", 2);
+        const r = await invoke(lambda, fn, { action: "maintenance", minutes: minutes(180), actor, reason: a.reason });
+        if (r["ok"] === false || !a.wait) return out(r);
+        return out(await waitUsable(lambda, fn, 15, sleep));
       }
       case "view-end":
         return out(await invoke(lambda, fn, { action: "view-end", actor, requested_at: await dispatchedAt(env) }));

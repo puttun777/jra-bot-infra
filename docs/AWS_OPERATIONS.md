@@ -68,6 +68,9 @@ pulumi config set jrabot-aws:appEnv '{"CALENDAR_WATCH_START_MINUTES":"…", …,
 - 止まらないとき: 25 分で StopInstances、さらに 10 分で強制停止（自動）。それでも running のまま → AWS コンソールの EC2 で状態を確認し、「インスタンスを停止」（強制停止は最後の手段。MySQL はクラッシュ回復で戻るが、直後に status でバックアップを確認）。
 - **停止し忘れの検知**: 制御の上限（20 時間）・Discord の通知・Budgets の通知（遅れる）。月に一度は AWS の請求のページで EC2 の時間を確認する。
 
+## 4b. 保守のための起動
+Actions → **aws-maintenance**（minutes 180/120・理由）。閲覧と同じく bot・通知・重い処理は動かさない。期限で自動で止まる（もう一度実行すると延長。途中で止めるなら aws-stop の stop-all）。復元（§8）に使う。
+
 ## 5. 重い処理（バックテスト・データセット・学習）
 Actions → **aws-batch**（task・args・minutes・reason）。開催日の処理中は拒否される。終わると起動目的を外す（他が無ければ停止）。引数は許可したものだけ（例 `--from=2026-01-01 --to=2026-06-30`）。
 
@@ -91,7 +94,7 @@ Actions → **aws-batch**（task・args・minutes・reason）。開催日の処�
 
 ## 8. バックアップ・復元
 - 自動: 停止のたび・deploy の前。手動: **aws-backup**。S3 `mysql/<JST の日付>/jrabot-<時刻>-<理由>.sql.gz`（SHA-256 をメタデータに記録して読み直して確認）。保持 35 日・旧版 7 日。EBS のスナップショット（週 1・2 世代）は予備。
-- 復元（実データなら本人の判断）: **aws-view だけで起動した状態**（開催日・batch の起動目的が無い）で Session Manager からインスタンスに入り `sudo /opt/jrabot/bin/jrabot-host restore --key mysql/…/….sql.gz --confirm RESTORE-<その日付>`（直前に現状のバックアップを取る → dump の完全性を確認 → DB `jrabot` を作り直して流し込む。開催日・batch・ジョブが動いていれば拒否）→ status で確認。流し込みが途中で失敗したら、直前の pre-restore のバックアップで同じ手順を行う。試験は CI の `aws-backup-restore`（合成データ）。
+- 復元（実データなら本人の判断）: **aws-maintenance（180 分）で起動した状態**（開催日・batch の起動目的が無い・保守が 90 分以上残っている）で Session Manager からインスタンスに入り `sudo /opt/jrabot/bin/jrabot-host restore --key mysql/…/….sql.gz --confirm RESTORE-<その日付>`（直前に現状のバックアップを取る → dump の完全性を確認 → DB `jrabot` を作り直して流し込む。開催日・batch・ジョブが動いていれば拒否）→ status で確認。流し込みが途中で失敗したら、直前の pre-restore のバックアップで同じ手順を行う。試験は CI の `aws-backup-restore`（合成データ）。
 - データ用 EBS からの復元（S3 も使えないとき）: スナップショットからボリュームを作り、EC2 を止めて付け替える（コンソール。Pulumi の state と食い違うので、後で `pulumi import` か設定の更新が必要）。
 
 ## 9. 困ったとき

@@ -1,0 +1,40 @@
+name: aws-maintenance
+# AWS: 保守（データの復元など）のための起動。閲覧と同じく bot・Discord の通知・ingest・重い処理は動かさない。期限で自動で停止する（最大 180 分）。
+# restore は保守の起動目的が 90 分以上残っているときだけ動く（途中で停止に入らない）。手順: docs/AWS_OPERATIONS.md §8。
+on:
+  workflow_dispatch:
+    inputs:
+      minutes:
+        description: 自動停止までの分（もう一度実行すると延長）
+        type: choice
+        options: ["180", "120"]
+        default: "180"
+      reason:
+        description: 理由
+        required: true
+permissions:
+  contents: read
+  id-token: write
+defaults:
+  run:
+    shell: bash
+jobs:
+  maintenance:
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    environment: ops
+    env:
+      AWS_ROLE_ARN: ${{ vars.AWS_OPS_ROLE_ARN }}
+      CONTROLLER_FUNCTION: ${{ vars.AWS_CONTROLLER_FUNCTION }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: ./.github/actions/setup-ops
+      - name: 保守の起動（準備完了まで待つ）
+        working-directory: ops
+        env:
+          MINUTES: ${{ inputs.minutes }}
+          REASON: ${{ inputs.reason }}
+        run: node ../build/ops/src/aws/cli.js maintenance --minutes "$MINUTES" --reason "$REASON" --wait | tee -a "$GITHUB_STEP_SUMMARY"

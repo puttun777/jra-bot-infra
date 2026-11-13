@@ -231,6 +231,11 @@ const BackupFile = z.object({
 });
 const NO_BACKUP = { last_ok_at: null, last_failed_at: null, last_key: null, last_error: null };
 const OpsView = z.looseObject({ seq: z.number().int(), mode: z.enum(MODES), workloads: WorkloadsSchema.optional() });
+/** restore の前提: 保守の起動目的（MAINTENANCE）が十分に残っている（途中で排出・停止に入らない）。 */
+const MaintenanceView = z.looseObject({
+  mode: z.enum(MODES),
+  aws: z.looseObject({ holds: z.array(z.looseObject({ purpose: z.string(), expires_at: z.string() })) }),
+});
 const SERVICE_CONTAINERS: Readonly<Record<string, string>> = {
   mysql: "jrabot-mysql",
   dashboard: "jrabot-dashboard",
@@ -260,6 +265,19 @@ function spoolEntries(): HostFacts["spool"] {
         return { file, request: undefined };
       }
     });
+}
+
+/**
+ * 制御（Lambda）が止まっているように見えるか: 運用状態が 3 時間以上書かれていない（動いている間は DNS の書直しで 1 時間ごとに書かれる）か読めない。
+ * 制御が動いているなら、停止は制御に任せる（開催日の途中に自分で止まらない）。
+ */
+async function controllerLooksDead(cfg: HostConfig): Promise<boolean> {
+  try {
+    const h = await clients.s3().send(new HeadObjectCommand({ Bucket: cfg.state_bucket, Key: "state/ops-state.json" }));
+    return h.LastModified === undefined || Date.now() - h.LastModified.getTime() > 3 * 3600_000;
+  } catch {
+    return true;
+  }
 }
 
 async function readOps(cfg: HostConfig): Promise<HostFacts["ops"]> {
@@ -441,13 +459,21 @@ export async function backup(cfg: HostConfig, reason: string): Promise<string> {
 async function restore(cfg: HostConfig, key: string, confirm: string): Promise<void> {
   if (!/^mysql\/\d{4}-\d{2}-\d{2}\/jrabot-[0-9TZ]+-[a-z0-9-]*\.sql\.gz$/.test(key)) throw new HostError("キーの形式が不正");
   if (confirm !== `RESTORE-${key.slice(6, 16)}`) throw new HostError(`確認の文字列が違う（RESTORE-${key.slice(6, 16)} を指定する）`);
-  // 開催日・重い処理の最中は戻さない（書込み中のコンテナと重なると結果が壊れる）。閲覧だけの起動のときに行う
+  // 開催日・重い処理の最中は戻さない（書込み中のコンテナと重なると結果が壊れる）。保守の起動（aws-maintenance。90 分以上残っている）で行う:
+  // 途中で期限が切れて排出・停止に入ると、DB を作り直した後の流し込みが切られる
   const ops = await readOps(cfg);
-  if (ops === undefined || ops.raceday || ops.batch)
-    throw new HostError("開催日・重い処理の起動目的があるとき（運用状態を読めないときも）は戻さない。閲覧だけの起動（aws-view）で行う");
+  if (ops === undefined || ops.raceday || ops.batch || ops.mode !== "NORMAL")
+    throw new HostError("運用モードが NORMAL で、開催日・重い処理の起動目的が無いときだけ戻す（aws-maintenance で起動する）");
+  const raw = (await new S3Json(clients.s3(), cfg.state_bucket).read("state/ops-state.json"))?.raw;
+  const mv = MaintenanceView.safeParse(raw);
+  const until = mv.success
+    ? Math.max(0, ...mv.data.aws.holds.filter((h) => h.purpose === "MAINTENANCE").map((h) => Date.parse(h.expires_at)))
+    : 0;
+  if (until - Date.now() < 90 * 60_000)
+    throw new HostError("保守の起動目的（MAINTENANCE）が 90 分以上残っていない（aws-maintenance で起動・延長する）");
   for (const j of ["jrabot-botrun", "jrabot-batch"])
     if (containerState(j) === "running") throw new HostError(`${j} が動いている間は戻さない`);
-  await backup(cfg, "pre-restore");
+  const preKey = await backup(cfg, "pre-restore");
   const obj = await clients.s3().send(new GetObjectCommand({ Bucket: cfg.backup_bucket, Key: key, ChecksumMode: "ENABLED" }));
   const bytes = await obj.Body?.transformToByteArray();
   if (bytes === undefined) throw new HostError("バックアップを読めない");
@@ -462,17 +488,23 @@ async function restore(cfg: HostConfig, key: string, confirm: string): Promise<v
     stop(c, 60);
   // 戻す前の版より新しい表を残さない（dump に無い表は消えないため）。利用者と権限は mysql の側にあるので残る。直前のバックアップは pre-restore
   if (mysqlExec("DROP DATABASE IF EXISTS jrabot;").code !== 0) throw new HostError("DB を作り直せない");
-  must(
-    [
-      "bash",
-      "-o",
-      "pipefail",
-      "-c",
-      `gzip -dc '${file}' | docker exec -i jrabot-mysql mysql --defaults-extra-file=/run/secrets/mysql-root.cnf`,
-    ],
-    "流し込み",
-    3600,
-  );
+  try {
+    must(
+      [
+        "bash",
+        "-o",
+        "pipefail",
+        "-c",
+        `gzip -dc '${file}' | docker exec -i jrabot-mysql mysql --defaults-extra-file=/run/secrets/mysql-root.cnf`,
+      ],
+      "流し込み",
+      3600,
+    );
+  } catch (e) {
+    throw new HostError(
+      `流し込みが失敗した（DB は不完全）。直前のバックアップ ${preKey} で同じ手順をやり直す: ${errorMessage(e).slice(0, 200)}`,
+    );
+  }
   rmSync(file, { force: true });
   console.log(`restore: ${key} を戻した（アプリは次の tick で起動する）`);
 }
@@ -530,7 +562,12 @@ function readyOf(port: number): boolean {
 async function tick(cfg: HostConfig): Promise<void> {
   // 最後の安全網: 制御（Lambda）が動かなくても、連続稼働の上限を超えたら自分で排出して止まる（停止し忘れの費用を限る）
   const uptimeHours = Number(readFileSync("/proc/uptime", "utf8").split(" ")[0]) / 3600;
-  if (Number.isFinite(uptimeHours) && uptimeHours > cfg.max_uptime_hours && !existsSync(join(RUN, "drained"))) {
+  if (
+    Number.isFinite(uptimeHours) &&
+    uptimeHours > cfg.max_uptime_hours &&
+    !existsSync(join(RUN, "drained")) &&
+    (await controllerLooksDead(cfg))
+  ) {
     console.log(`稼働 ${uptimeHours.toFixed(1)} 時間が上限 ${cfg.max_uptime_hours} 時間を超えた。排出して停止する`);
     await drain(cfg, {});
     return;
