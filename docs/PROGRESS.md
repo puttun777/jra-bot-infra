@@ -7,7 +7,8 @@
 - **本人の承認が必要**: `pulumi up`（課金リソースの作成）、`enableWebPush`（IAM）、実データの投入（COMP-4 の後）、GCP の停止・削除、ドメイン。用意するもの: `AWS_OPERATIONS.md` §0（U1〜U12）。
 - **独立レビュー（Opus・読取り専用。GitHub の第三者 Approve ではない）**: 高 0・中 8・低/中 7 → すべて修正（I-048）。修正後: ops 193 件・pulumi 30 件・pulumi-aws 13 件（skip 0）、lint。追加の費用: CloudWatch のアラーム 2 個 $0.20/月（CLOUD_COSTS §12 を更新: 100 時間 ≈ ¥1,226）。
 - **修正後の再レビュー（Opus）**: 中 5・低 7 → 中はすべて修正（I-049）。修正後: ops 198 件・pulumi 30 件・pulumi-aws 13 件（skip 0）、lint。
-- **次**: PR → CI。**この PR は IAM の定義を含むため、マージは本人の確認の後**。その後、本人の承認を得て AWS_OPERATIONS §1 の初回の構築。
+- **PR #15**: CI（ci gate・ops-tests・terraform・aws-backup-restore）が 2acd5ac で成功。web の PR #63 は 2026-11-13 にマージ済み（b352f8a）。**この PR は IAM・OIDC の定義を含むため、マージは本人の確認の後**。
+- **次（本人）**: この PR の確認・マージ → `AWS_OPERATIONS.md` §0 の準備（U1〜U12）→ §1 の初回の構築（`pulumi up`。課金）→ 合成データで §2〜§8 → COMP-4 の後に §7 の切替。**次（開発）**: `ssm:Overwrite` の IAM の条件（公式文書で確認してから）、アプリの資格情報をホストのロールから分ける（AWS_ARCHITECTURE §5 の残るリスク）。**この PR は IAM の定義を含むため、マージは本人の確認の後**。その後、本人の承認を得て AWS_OPERATIONS §1 の初回の構築。
 
 ## 2026-11-09 案 1 の最小化を IaC に反映（ブランチ claude/serene-mayer-pxakgw。I-041。**適用はしない**）
 - 本人が案 1（Cloud Run + Cloud SQL の最小化）を選択（web D-278）。Pulumi・Terraform の既定: Cloud SQL db-f1-micro・SSD 10 GB・予算の通知 3,000 円。試験の期待値を更新。ARCHITECTURE §3・OPERATIONS_DESIGN・PULUMI_MIGRATION。作成後のディスクの大きさの差分は無視（縮小できないため。自動拡張の後も含む）。予算 3,000 円は 1a・現行 bot-run だと毎月通知が出る見込み（I-041）。
