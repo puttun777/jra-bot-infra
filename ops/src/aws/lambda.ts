@@ -52,7 +52,7 @@ export interface ControllerResult {
   readonly holdId?: string;
   readonly summary: Record<string, unknown>;
   readonly errors: readonly string[];
-  /** status のときだけ: ビーコンの検証鍵（公開値。Windows エージェントの設定に使う）。 */
+  /** status のときだけ: ビーコンの検証鍵（公開値。生 32 バイトの base64url。Windows エージェントの beacon.keys に使う）。 */
   readonly beaconPublicKey?: { kid: string; key: string };
 }
 
@@ -217,7 +217,7 @@ export async function handler(event: unknown): Promise<ControllerResult> {
         if (secret !== undefined) beaconKey = privateKeyFromSecret(secret);
       }
       if (beaconKey !== undefined)
-        result = { ...result, beaconPublicKey: { kid: env.BEACON_KID, key: publicKeyRaw(beaconKey).toString("base64") } };
+        result = { ...result, beaconPublicKey: { kid: env.BEACON_KID, key: publicKeyRaw(beaconKey).toString("base64url") } };
     } catch {
       // 公開鍵の表示は補助（無くても状態は返す）
     }
