@@ -1,0 +1,39 @@
+name: aws-backup
+# AWS: MySQL のバックアップを今すぐ取る（EC2 が動いているときだけ。停止のたびにも自動で取る）。S3 に置き、SHA-256 で確かめる。
+on:
+  workflow_dispatch:
+    inputs:
+      reason:
+        description: 理由（英小文字・数字・ハイフン。例 before-upgrade）
+        required: true
+        default: manual
+permissions:
+  contents: read
+  id-token: write
+concurrency:
+  group: ops-aws-host
+  cancel-in-progress: false
+defaults:
+  run:
+    shell: bash
+jobs:
+  backup:
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    timeout-minutes: 50
+    environment: ops
+    env:
+      AWS_ROLE_ARN: ${{ vars.AWS_OPS_ROLE_ARN }}
+      CONTROLLER_FUNCTION: ${{ vars.AWS_CONTROLLER_FUNCTION }}
+      INSTANCE_ID: ${{ vars.AWS_INSTANCE_ID }}
+      HOST_COMMAND_DOCUMENT: ${{ vars.AWS_HOST_COMMAND_DOCUMENT }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: ./.github/actions/setup-ops
+      - name: backup
+        working-directory: ops
+        env:
+          REASON: ${{ inputs.reason }}
+        run: node ../build/ops/src/aws/cli.js backup --reason "$REASON" | tee -a "$GITHUB_STEP_SUMMARY"

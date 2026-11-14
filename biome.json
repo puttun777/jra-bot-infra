@@ -4,7 +4,9 @@
     "includes": [
       "ops/**/*.ts",
       "ops/**/*.mjs",
-      "pulumi/**/*.ts"
+      "pulumi/**/*.ts",
+      "pulumi-aws/**/*.ts",
+      "pulumi-aws/**/*.mjs"
     ]
   },
   "formatter": {

@@ -63,3 +63,6 @@
 
 ### 7.1 npm audit（2026-11-03）
 `npm audit` は moderate 20 件。すべて @pulumi/pulumi が依存する npm の内部ツール（@npmcli/*・pacote・sigstore・tuf-js）が使う `glob`（GHSA-3g3m-2fjr-6pw4: AbortSignal でのキャンセルの迂回）と `minimatch`（GHSA-g3hv-75wg-m249: パターンの増幅によるサービス妨害）。どちらも**攻撃者が指定するパターン・入力**が前提で、このリポジトリのプログラム（定義の評価と mock の試験）は外部入力のパターンを渡さない。`npm audit fix --force` の提案は @pulumi/pulumi 3.107.0（大幅な格下げ）で採らない。`overrides` で推移的依存の版を上げると @npmcli の API の互換が崩れ得るので使わない。@pulumi/pulumi の更新で解消したら記録を消す。
+
+## 追記 2026-11-13: AWS への移行（I-042）
+本人の方針変更で配置先を AWS へ移す設計・実装を `pulumi-aws/`（別のプロジェクト `jra-bot-aws`・S3 の DIY backend）に追加した。GCP の `pulumi/`・`terraform/` は切替が終わるまで残す（切戻し用。二重に apply しない対象は GCP の 2 つの定義の間の話で、AWS とは資源が重ならない）。AWS の手順は `AWS_OPERATIONS.md`。

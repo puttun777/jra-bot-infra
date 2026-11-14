@@ -1,0 +1,11 @@
+# AWS の資源定義（Pulumi + TypeScript。web D-280〜D-286、infra I-042）。**`pulumi up` / `destroy` は本人の承認後**（課金リソースを作る）。
+# state は S3 の DIY backend（`pulumi login s3://<bucket>/pulumi`）、秘密の暗号化は passphrase（KMS の鍵の月額を避ける: docs/AWS_ARCHITECTURE.md §9）。
+name: jra-bot-aws
+description: JRA Bot の AWS 資源（EC2 1 台 + EBS + S3 + Lambda の制御。通常は停止）
+runtime:
+  name: nodejs
+  options:
+    typescript: false
+main: ../build/pulumi-aws/src/index.js
+options:
+  refresh: always

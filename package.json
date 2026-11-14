@@ -7,18 +7,26 @@
     "node": ">=24.22.2 <25"
   },
   "scripts": {
-    "build": "tsc -p ops/tsconfig.json && tsc -p pulumi/tsconfig.json",
-    "lint": "biome check ops pulumi",
-    "format": "biome check --write ops pulumi",
-    "test": "npm run --silent build && node ops/run-tests.mjs && node pulumi/run-tests.mjs",
-    "ops": "node build/ops/src/cli.js"
+    "build": "tsc -p ops/tsconfig.json && tsc -p pulumi/tsconfig.json && tsc -p pulumi-aws/tsconfig.json",
+    "lint": "biome check ops pulumi pulumi-aws",
+    "format": "biome check --write ops pulumi pulumi-aws",
+    "test": "npm run --silent build && npm run --silent bundle:aws && node ops/run-tests.mjs && node pulumi/run-tests.mjs && node pulumi-aws/run-tests.mjs",
+    "ops": "node build/ops/src/cli.js",
+    "bundle:aws": "node ops/bundle-aws.mjs"
   },
   "devDependencies": {
     "@biomejs/biome": "2.5.15",
     "@types/node": "24.19.2",
+    "esbuild": "0.28.2",
     "typescript": "6.0.3"
   },
   "dependencies": {
+    "@aws-sdk/client-ec2": "3.1160.0",
+    "@aws-sdk/client-lambda": "3.1160.0",
+    "@aws-sdk/client-route-53": "3.1160.0",
+    "@aws-sdk/client-s3": "3.1160.0",
+    "@aws-sdk/client-ssm": "3.1160.0",
+    "@pulumi/aws": "7.52.1",
     "@pulumi/gcp": "10.2.0",
     "@pulumi/pulumi": "3.270.0",
     "ajv": "8.20.0",

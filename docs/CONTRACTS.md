@@ -68,6 +68,12 @@
 | 権限 | OPERATIONS_DESIGN §11、ARCHITECTURE §5 |
 
 
+## 4d. 2026-11-13 同期（web CONTRACTS 0.4.19。AWS への移行: web D-280〜D-287・infra I-042〜I-047）
+- **release-manifest**: `images` に ECR（`<12 桁>.dkr.ecr.ap-northeast-1.amazonaws.com/jra-bot/<名前>@sha256:…`）を許す・任意の `runtime.arch`（arm64/amd64）。`schemas/release-manifest.v3.json` を同期。GCP の deploy は Artifact Registry 以外を拒否（変更なし）、AWS の deploy（`ops/src/aws/cli.ts`）は ECR だけ・`runtime.arch` 必須・インスタンスと一致を検査。
+- **AWS で infra が渡す環境変数**（`ops/src/aws/services.ts`）: `RUNTIME_PLATFORM=aws`、`OPS_MODE_SOURCE=s3://<ops-state>/state/ops-state.json`、`MODEL_STORE_URI=s3://<models>`、`COGNITO_ISSUER`・`COGNITO_CLIENT_ID`（dashboard）、`INTERNAL_OPS_TOKEN_FILE`（dashboard・ingest。起動ごとの乱数）、`AGENT_HEARTBEAT_PREFIX=s3://<ops-state>/agent/`（ingest）、bot の Job は常に `OPS_WORKLOAD_GATE=required`・`JOB_LAUNCHER=spool`・`JOB_SPOOL_DIR`、`MODEL_VERIFY_PUBKEY`（署名鍵から導出）。秘密（DB のパスワード・ペッパー・KEK・Discord・署名鍵）は SSM → root だけが読める env ファイル。
+- **運用状態**: `workloads {raceday, batch}`（制御が書く。web D-282）と `aws` の節（infra 固有。アプリは読まない）。ビーコンの NORMAL は「開催日で ingest の準備完了」のときだけ。
+- **spool**（web D-283）: bot の `JOB_LAUNCHER=spool` が `JOB_SPOOL_DIR` に置く起動依頼を、ホストの運用エージェントが検査して bot-run だけを起動する。`--task=calendar-plan` の出力をホストが S3 の `control/calendar-plan.json` へ置く（制御の開催日の計画）。
+
 ## 4c. 2026-11-06 同期（web CONTRACTS 0.4.18。R16: web D-265・infra I-038）
 | ID | 内容 | infra 側 |
 |---|---|---|

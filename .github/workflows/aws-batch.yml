@@ -1,0 +1,66 @@
+name: aws-batch
+# AWS: 重い処理（バックテスト・データセットの書出し・ML の学習）。batch の起動目的で EC2 を起動し、準備完了の後に SSM で 1 つ実行する。
+# 開催日の処理の最中は拒否する（開催日が優先）。終わったら起動目的を外す（他に起動目的が無ければ自動で停止する）。設計: docs/AWS_OPERATIONS.md §5。
+on:
+  workflow_dispatch:
+    inputs:
+      task:
+        description: 実行する処理
+        type: choice
+        options: ["backtest", "export-dataset", "ml-train"]
+      args:
+        description: 引数（例 --from=2026-01-01 --to=2026-06-30。ml-train は train --dataset-id=…）
+        required: false
+        default: ""
+      minutes:
+        description: 起動目的の期限（分。処理が長いときは長めに）
+        type: choice
+        options: ["180", "60", "120", "360", "480"]
+        default: "180"
+      reason:
+        description: 理由
+        required: true
+permissions:
+  contents: read
+  id-token: write
+concurrency:
+  group: ops-aws-host
+  cancel-in-progress: false
+defaults:
+  run:
+    shell: bash
+jobs:
+  batch:
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    timeout-minutes: 500
+    environment: ops
+    env:
+      AWS_ROLE_ARN: ${{ vars.AWS_OPS_ROLE_ARN }}
+      CONTROLLER_FUNCTION: ${{ vars.AWS_CONTROLLER_FUNCTION }}
+      INSTANCE_ID: ${{ vars.AWS_INSTANCE_ID }}
+      HOST_COMMAND_DOCUMENT: ${{ vars.AWS_HOST_COMMAND_DOCUMENT }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: ./.github/actions/setup-ops
+      - name: batch の起動（準備完了まで待つ）
+        id: hold
+        working-directory: ops
+        env:
+          MINUTES: ${{ inputs.minutes }}
+          REASON: ${{ inputs.reason }}
+        run: node ../build/ops/src/aws/cli.js batch --minutes "$MINUTES" --reason "$REASON" --wait | tee -a "$GITHUB_STEP_SUMMARY"
+      - name: 処理の実行（SSM。引数は許可したものだけ）
+        working-directory: ops
+        env:
+          TASK: ${{ inputs.task }}
+          ARGS: ${{ inputs.args }}
+        run: node ../build/ops/src/aws/cli.js run-batch --task "$TASK" --args "$ARGS" | tee -a "$GITHUB_STEP_SUMMARY"
+      - name: 起動目的を外す（他に無ければ自動で停止）
+        if: always() && steps.hold.outputs.hold_id != ''
+        working-directory: ops
+        env:
+          HOLD: ${{ steps.hold.outputs.hold_id }}
+        run: node ../build/ops/src/aws/cli.js release --hold "$HOLD" | tee -a "$GITHUB_STEP_SUMMARY"

@@ -62,28 +62,28 @@
       "properties": {
         "dashboard": {
           "type": "string",
-          "pattern": "^asia-northeast1-docker\\.pkg\\.dev/[a-z][a-z0-9-]{4,28}[a-z0-9]/jra-bot/dashboard@sha256:[0-9a-f]{64}$",
-          "description": "Artifact Registry の dashboard イメージ。digest 必須（タグ・ローカル image ID は不可）"
+          "pattern": "^(asia-northeast1-docker\\.pkg\\.dev/[a-z][a-z0-9-]{4,28}[a-z0-9]|[0-9]{12}\\.dkr\\.ecr\\.ap-northeast-1\\.amazonaws\\.com)/jra-bot/dashboard@sha256:[0-9a-f]{64}$",
+          "description": "Artifact Registry の dashboard イメージ（GCP）または ECR の dashboard イメージ（AWS。D-285）。digest 必須（タグ・ローカル image ID は不可）"
         },
         "ingest": {
           "type": "string",
-          "pattern": "^asia-northeast1-docker\\.pkg\\.dev/[a-z][a-z0-9-]{4,28}[a-z0-9]/jra-bot/ingest@sha256:[0-9a-f]{64}$",
-          "description": "Artifact Registry の ingest イメージ。digest 必須（タグ・ローカル image ID は不可）"
+          "pattern": "^(asia-northeast1-docker\\.pkg\\.dev/[a-z][a-z0-9-]{4,28}[a-z0-9]|[0-9]{12}\\.dkr\\.ecr\\.ap-northeast-1\\.amazonaws\\.com)/jra-bot/ingest@sha256:[0-9a-f]{64}$",
+          "description": "Artifact Registry の ingest イメージ（GCP）または ECR の ingest イメージ（AWS。D-285）。digest 必須（タグ・ローカル image ID は不可）"
         },
         "bot": {
           "type": "string",
-          "pattern": "^asia-northeast1-docker\\.pkg\\.dev/[a-z][a-z0-9-]{4,28}[a-z0-9]/jra-bot/bot@sha256:[0-9a-f]{64}$",
-          "description": "Artifact Registry の bot イメージ。digest 必須（タグ・ローカル image ID は不可）"
+          "pattern": "^(asia-northeast1-docker\\.pkg\\.dev/[a-z][a-z0-9-]{4,28}[a-z0-9]|[0-9]{12}\\.dkr\\.ecr\\.ap-northeast-1\\.amazonaws\\.com)/jra-bot/bot@sha256:[0-9a-f]{64}$",
+          "description": "Artifact Registry の bot イメージ（GCP）または ECR の bot イメージ（AWS。D-285）。digest 必須（タグ・ローカル image ID は不可）"
         },
         "db-migration": {
           "type": "string",
-          "pattern": "^asia-northeast1-docker\\.pkg\\.dev/[a-z][a-z0-9-]{4,28}[a-z0-9]/jra-bot/db-migration@sha256:[0-9a-f]{64}$",
-          "description": "Artifact Registry の db-migration イメージ。digest 必須（タグ・ローカル image ID は不可）"
+          "pattern": "^(asia-northeast1-docker\\.pkg\\.dev/[a-z][a-z0-9-]{4,28}[a-z0-9]|[0-9]{12}\\.dkr\\.ecr\\.ap-northeast-1\\.amazonaws\\.com)/jra-bot/db-migration@sha256:[0-9a-f]{64}$",
+          "description": "Artifact Registry の db-migration イメージ（GCP）または ECR の db-migration イメージ（AWS。D-285）。digest 必須（タグ・ローカル image ID は不可）"
         },
         "ml-train": {
           "type": "string",
-          "pattern": "^asia-northeast1-docker\\.pkg\\.dev/[a-z][a-z0-9-]{4,28}[a-z0-9]/jra-bot/ml-train@sha256:[0-9a-f]{64}$",
-          "description": "Artifact Registry の ml-train イメージ。digest 必須（タグ・ローカル image ID は不可）"
+          "pattern": "^(asia-northeast1-docker\\.pkg\\.dev/[a-z][a-z0-9-]{4,28}[a-z0-9]|[0-9]{12}\\.dkr\\.ecr\\.ap-northeast-1\\.amazonaws\\.com)/jra-bot/ml-train@sha256:[0-9a-f]{64}$",
+          "description": "Artifact Registry の ml-train イメージ（GCP）または ECR の ml-train イメージ（AWS。D-285）。digest 必須（タグ・ローカル image ID は不可）"
         }
       }
     },
@@ -173,6 +173,10 @@
       "properties": {
         "jdk": {
           "const": "25"
+        },
+        "arch": {
+          "enum": ["arm64", "amd64"],
+          "description": "イメージの CPU アーキテクチャ（任意。0.4.19 で追加: D-284）。AWS の deploy はインスタンスの種類と一致することを確かめる"
         }
       },
       "description": "実行環境。schema_version 3（CONTRACTS 0.4.17）で python を削除した（ml-train を含む 5 つのイメージはすべて JDK 25。D-257）"

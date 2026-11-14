@@ -1,0 +1,26 @@
+# 外向きのリバースプロキシ（HTTPS。証明書は Let's Encrypt を自動で取得・更新し、/data/caddy〔データの EBS〕に保存する: 再起動・IP の変更でも再取得しない）。
+# - /internal は外へ出さない（アプリもトークンで守る: 多層の防御）。
+# - /v1/agent/* は Windows 取得エージェント → ingest（エージェントの認証はアプリのトークン + HMAC。閲覧用の起動では ingest が動いていないので 502）。
+# - それ以外は oauth2-proxy（Cognito でログイン）→ dashboard（Cognito の ID トークンの署名をアプリが検証する）。
+{
+	admin off
+	servers {
+		protocols h1 h2
+	}
+}
+
+{$SITE_HOST} {
+	encode gzip
+	header {
+		Strict-Transport-Security "max-age=31536000"
+		-Server
+	}
+	@internal path /internal /internal/*
+	respond @internal 404
+	handle /v1/agent/* {
+		reverse_proxy jrabot-ingest:8080
+	}
+	handle {
+		reverse_proxy jrabot-oauth2-proxy:4180
+	}
+}

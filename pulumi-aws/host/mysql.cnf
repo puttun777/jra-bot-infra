@@ -1,0 +1,16 @@
+# MySQL 8.4 の設定（1 台の t4g.small に収める。2026-11-13 の実測: この設定で開催日相当の負荷の RSS は約 177 MiB）。
+[mysqld]
+performance_schema = OFF
+innodb_buffer_pool_size = 128M
+innodb_log_buffer_size = 8M
+innodb_flush_log_at_trx_commit = 1
+max_connections = 40
+table_open_cache = 400
+thread_cache_size = 8
+tmp_table_size = 16M
+max_heap_table_size = 16M
+key_buffer_size = 8M
+skip_name_resolve = ON
+default_time_zone = '+00:00'
+character_set_server = utf8mb4
+collation_server = utf8mb4_0900_ai_ci
