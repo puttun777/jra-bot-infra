@@ -121,13 +121,22 @@ Actions → **aws-batch**（task・args・minutes・reason）。開催日の処�
 | ログインできたが 403 | 本人のメールか（`ownerEmail` と Cognito の利用者のメールの一致）、`app_user` の行 | ホストの boot と復元の直後に `INSERT IGNORE` で作る（既存の行は変えない）。既存の行が無効（enabled=0）・VIEWER なら、本人の判断で DB を直す（自動では変えない） |
 | Cognito でログインできない | 本人のメールか・MFA | 管理者がコンソールでパスワードの再設定 |
 | 公開 URL が変わった | distribution を作り直した（Pulumi の差分で `replace`） | 新しい `site_url` をブックマーク・Windows エージェントの `server.base_url` に。Cognito の callback は Pulumi が更新する |
-| EC2 の置換えが必要（AZ の変更・壊れた等） | — | **自動では行わない（未対応・手作業）**: VPC origin のインスタンスの変更は provider でその場の更新になり、distribution が使っている間は失敗し得る（`CannotUpdateEntityWhileInUse`）。手順の案: ① aws-backup → aws-stop（stop-all）② EC2 の削除保護を外す ③ distribution の既定の動作の origin を一時的に S3（案内のページ）に → VPC origin を削除 ④ データの EBS を外して新しいインスタンスへ（同じ AZ）⑤ `pulumi up` で VPC origin・SG の規則・distribution を作り直す（EC2 を running にしておく）⑥ aws-view で確認。実施の前に本人が手順を確認する（実データ） |
+| EC2 の置換えが必要（壊れた・AZ の変更等） | — | **自動では行わない（未対応・手作業）**: VPC origin のインスタンスの変更は provider でその場の更新（`UpdateVpcOrigin`）になり、distribution が使っている間は失敗し得る（`CannotUpdateEntityWhileInUse`）。下の「インスタンスの置換え（手順の案）」を、実施の前に本人が確認する（実データ） |
 | 停止が clean=false | Discord・status の last_stop | 次の起動後に aws-backup で取り直す |
 | 「停止し忘れ」 | status の holds・auto_stop_at | aws-stop（stop-all）。制御が動かない場合もホストが 30 時間で自分で止まる |
 | アラームのメール（制御のエラー・定期実行が来ない） | CloudWatch のロググループ `/aws/lambda/<prefix>-controller` | 原因（権限・状態の破損）を直す。止まらない EC2 はコンソールで停止 |
 | 開催の計画が無い・古いの通知 | status | aws-view で一度起動して計画を更新する（NORMAL の間 6 時間ごとに書き出す）か、aws-raceday add |
 | ネットワークの範囲の違い（boot の失敗） | `docker network inspect jrabot` | 全コンテナを止めて `docker network rm jrabot` → `systemctl restart jrabot-boot` |
 | モデルの鍵の入替え | — | 新しい署名鍵を SSM に置く（旧い鍵で署名したモデルは再学習・再署名）。複数の検証鍵の併用は未対応（必要になったら web の CONTRACTS §5.1 に合わせて追加） |
+
+**インスタンスの置換え（手順の案。実環境で未確認。公式「Update a VPC origin」に沿う）**:
+1. aws-backup → aws-stop（stop-all）→ STOPPED を確認。Scheduler を一時的に止める（`aws scheduler update-schedule … --state DISABLED`。止めている間『定期実行が来ない』のアラームが届く）。
+2. **distribution から VPC origin を外す**（コンソール）: 既定の動作の origin を S3 の案内のページ（`offline`）に変える → Origins タブで `host`（VPC origin）を削除（関連付けの解除）→ 配布の完了を待つ。
+3. データ:
+   - **同じ AZ**: データの EBS を旧インスタンスから外す（停止中）。
+   - **AZ を変える**: データの EBS は AZ に固定され、Pulumi では `protect`・`retainOnDelete`。新しい AZ には、スナップショットから新しいボリュームを作るか、新しい空のボリュームに S3 のバックアップを §8 で戻す。Pulumi の state は `pulumi import`（新しいボリューム）と `pulumi state delete`（旧いボリューム。実物は消さない）で合わせる。設定の `availabilityZoneId` を変える。
+4. 旧インスタンスの削除保護を外す（`aws ec2 modify-instance-attribute --no-disable-api-termination`）→ `pulumi up --replace '<インスタンスの URN>'`（`pulumi stack --show-urns` で確認。新しいインスタンスは作成と同時に起動する。VPC origin はその場の更新〔distribution から外してあるので可〕→ 管理 SG の規則 → distribution の `host` の origin が Pulumi の定義どおりに戻る）。
+5. `pulumi refresh` → `pulumi preview` が差分なし → Scheduler を戻す（`--state ENABLED`）→ aws-view で確認（V-3・V-5）。
 
 **合言葉（`X-Origin-Verify`）の入替え**（漏れた疑いがあるとき。**EC2 を止めた状態で・開催日には行わない**）: `pulumi stack --show-urns | grep origin-verify` で RandomPassword の URN を確かめ、`pulumi up --replace '<URN>'`（SSM の値と distribution のヘッダが同時に変わる。配布の完了を待つ）→ 次の起動の boot で Caddy が新しい値を読む。動いている間に行うと、作り直すまで 403 になり、**Windows エージェントは認証の失敗として送信を止める**（本人が再開するまで）。
 

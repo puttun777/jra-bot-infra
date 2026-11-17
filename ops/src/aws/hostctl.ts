@@ -523,8 +523,16 @@ async function restore(cfg: HostConfig, key: string, confirm: string): Promise<v
     );
   }
   rmSync(file, { force: true });
-  // 戻した DB に本人の行が無い（他の環境・古い dump）と、ログインできても 403 になる。boot を待たずに作る（既存の行は変えない。レビュー C1）
-  ensureOwner(cfg);
+  // 戻した DB に本人の行が無い（他の環境・古い dump）と、ログインできても 403 になる。boot を待たずに作る（既存の行は変えない。レビュー C1）。
+  // 失敗しても DB は戻っているので、復元の失敗とは区別して伝える（次の boot でも作る）
+  try {
+    ensureOwner(cfg);
+  } catch (e) {
+    console.error(
+      `restore: ${key} を戻した。ただし本人の利用者の行を作れなかった（${e instanceof Error ? e.message : String(e)}）。次の boot で作り直す（aws-stop → aws-maintenance）`,
+    );
+    return;
+  }
   console.log(`restore: ${key} を戻した（本人の利用者の行を確認した。アプリは次の tick で起動する）`);
 }
 

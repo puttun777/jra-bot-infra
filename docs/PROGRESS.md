@@ -1,12 +1,12 @@
 # PROGRESS（jra-bot-infra）
 最終更新: 2026-11-17（独自ドメインをやめ CloudFront の標準 URL + VPC origin へ。I-050。適用なし）。旧: 2026-11-13（GCP → AWS の移行の設計・実装。I-042〜I-047。適用なし）。旧: 2026-11-09（案 1 の最小化を IaC に反映。I-041）。旧: 2026-11-07（低コスト化の 3 案の再見積り。I-040）。旧: 2026-11-07（web のイメージの公開の権限。I-039。本人の承認待ち）。旧: 2026-11-06（backtest の Job・deploy の BOT_JOBS の修正。I-038）。旧: 2026-11-03（L6: Pulumi の定義・試験・ガード。旧: 2026-11-02 L3 同期: release-manifest v3。L2: ops を TypeScript へ。旧: 2026-11-01 第5段階のコード・workflow・Runbook）
 
-## 2026-11-17 中断・再開の記録（CloudFront の標準 URL の作業。**作業中**。秘密は含まない。最終更新 2026-11-17 16:50 UTC）
+## 2026-11-17 中断・再開の記録（CloudFront の標準 URL の作業。秘密は含まない。最終更新 2026-11-17 17:10 UTC）
 - **ブランチ**: infra・web とも `claude/jra-bot-gcp-to-aws-uqla8y`（main は infra c61496f・web 445a79d のまま）。**AWS には何も作っていない**。
-- **完了**: 実装（infra 5a5269d・文書 ac02611、web eb3d7ef）→ 独立レビュー A・B・C（対象 web 445a79d..eb3d7ef・infra c61496f..ac02611）→ 照合（infra DECISIONS I-051・web D-289。高 0・中 3・低 19。採用・不採用と理由）→ 修正（infra 4b65f4d コード・75a1e33 文書、web は本節を含むコミット）。
-- **修正後の検証（ローカル）**: infra lint・ops 205・pulumi 30・pulumi-aws 18（skip 0）、Caddy の結合試験 29 項目（変異で 11 件が失敗することも確認）、バックアップ・復元の結合試験（復元の後の本人の行を含む）。web `DashboardAwsPersonAuthTest` 6・`CsrfGuardCloudFrontTest` 2・ktlint・TypeScript の lint/試験・consistency。
-- **残り**: ① 修正の再レビュー（修正の差分だけ。A・B・C の観点を 1 名で）→ 新たな高・中があれば修正 ② push・PR 作成（web・infra）③ CI（ci gate と各ジョブ）の確認・失敗の修正 ④ web はマージ条件を満たせばマージ、infra は IAM・CloudFront を含むため本人の確認の後 ⑤ 最終報告。
-- **次に実行する手順**: 再レビューの対象は infra ac02611..（最新）・web eb3d7ef..（最新）。PR の本文の下書きは作業者の一時領域にあるが、無くても CONTRACTS・DECISIONS・PROGRESS から作れる。
+- **完了**: 実装（infra 5a5269d・ac02611、web eb3d7ef）→ 独立レビュー A・B・C（infra c61496f..ac02611・web 445a79d..eb3d7ef）→ 照合（I-051・web D-289。高 0・中 3・低 19）→ 修正（infra 4b65f4d・75a1e33、web a179e91）→ **修正の再レビュー**（infra ac02611..058f831・web eb3d7ef..a179e91。新しい高・中なし。低 N1・N2 と情報 I1・I2 を修正）。
+- **検証（ローカル。この記録のコミットの直前の作業ツリー）**: infra lint・ops 205・pulumi 30・pulumi-aws 18（skip 0）、Caddy の結合試験 29 項目、バックアップ・復元の結合試験（復元の後の本人の行を含む。N2・I1・I2 の前のコードで実行、その後の変更は試験に影響しない hostctl のメッセージと probe の待ちだけ）。web `DashboardAwsPersonAuthTest` 6・`DashboardAwsWiringTest` 3・`CsrfGuardCloudFrontTest` 2・ktlint・TypeScript の lint/試験（tools 186・画面 54）・consistency。
+- **残り**: ① push・PR 作成（web・infra）② CI（ci gate と各ジョブ）の確認・失敗の修正 ③ web はマージ条件を満たせばマージ、infra は IAM・CloudFront・SG・Cognito を含むため本人の確認の後 ④ 最終報告。
+- **次に実行する手順**: PR が無ければ作る（本文: 概要・変更・検証・独立レビュー・本人の確認点）→ CI を確認（`ci gate` と実行された各ジョブ。skipped を成功扱いにしない）→ 失敗はローカルで再現して直す。
 
 ## 2026-11-17 独自ドメインなし: CloudFront の標準 URL + VPC origin（ブランチ claude/jra-bot-gcp-to-aws-uqla8y〔main c61496f から〕。I-050・web D-288・CONTRACTS 0.4.20。**AWS には何も作っていない・適用しない**）
 - **変更**: Route 53・Let's Encrypt・制御の DNS の更新・`@aws-sdk/client-route-53` を削除。CloudFront（標準のドメイン・既定の証明書・CachingDisabled + AllViewer・全メソッド・エラー TTL 0・502/504 → S3〔OAC〕の 503 の案内）+ VPC origin（EC2 の 80 番・SG は管理 SG からだけ）+ 合言葉 `X-Origin-Verify`（`@pulumi/random` 4.21.6 → SSM → Caddy）。Caddy は HTTP（`route` で順序を固定: 合言葉 403・Host 421・識別のヘッダの除去・`/internal` 404・`/_jrabot/health`・`/logout`）。Cognito の callback/logout は CloudFront の URL（distribution の後に作る）、ホストへは S3 `control/site.json`。制御は NORMAL の条件に CloudFront 経由の health を追加。ホストは本人の `tenant`・`app_user(ADMIN)` を `INSERT IGNORE`。サブネットは AZ の ID（az3 不可）。`appEnv` で infra の値を上書きさせない。

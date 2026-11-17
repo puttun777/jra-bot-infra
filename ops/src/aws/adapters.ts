@@ -107,7 +107,8 @@ export class Ec2 {
 export async function probeSite(siteUrl: string, fetchFn: typeof fetch = fetch): Promise<boolean> {
   if (!/^https:\/\/d[a-z0-9]{6,32}\.cloudfront\.net$/.test(siteUrl)) return false;
   try {
-    const r = await fetchFn(`${siteUrl}/_jrabot/health`, { redirect: "manual", signal: AbortSignal.timeout(5_000) });
+    // CloudFront の origin への接続の待ち（5 秒 × 2 回）より長く待つ（2 回目の接続の結果まで見る。Lambda の上限 60 秒の内）
+    const r = await fetchFn(`${siteUrl}/_jrabot/health`, { redirect: "manual", signal: AbortSignal.timeout(12_000) });
     return r.status === 200 && (await r.text()).trim() === "ok";
   } catch {
     return false;
