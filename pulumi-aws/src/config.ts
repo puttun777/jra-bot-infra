@@ -26,6 +26,16 @@ export const REQUIRED_APP_KEYS = [
   "BOT_RUN_DECISION_PROFILE",
 ] as const;
 
+/** infra が決める値（本人の運用値で上書きさせない: 認証・公開 URL・配置先の取り違えを防ぐ）。 */
+const INFRA_OWNED_APP_KEYS = [
+  "RUNTIME_PLATFORM",
+  "COGNITO_ISSUER",
+  "COGNITO_CLIENT_ID",
+  "ALLOWED_USERS",
+  "ADMIN_USERS",
+  "OPS_MODE_SOURCE",
+] as const;
+
 /** 秘密を app.env に入れさせない（control/app.env は秘密でない値だけ。秘密は SSM）。 */
 const FORBIDDEN_APP_KEYS = /PASSWORD|SECRET|TOKEN|KEY|WEBHOOK|PEPPER|KEK/;
 
@@ -42,25 +52,20 @@ const AwsInfraBase = z
     amiId: z.string().regex(/^ami-[0-9a-f]{8,17}$/),
     /** CPU クレジット（unlimited: 起動直後の JVM でも遅くならない。超過分は課金: docs/AWS_ARCHITECTURE.md §8）。 */
     cpuCredits: z.enum(["unlimited", "standard"]).default("unlimited"),
-    availabilityZone: z
+    /**
+     * サブネット・EBS のアベイラビリティゾーンの **ID**（名前 ap-northeast-1a 等とは対応がアカウントごとに違う）。CloudFront の VPC origin は東京の
+     * apne1-az3 を使えない（docs.aws.amazon.com の『Supported AWS Regions for VPC origins』。2026-11-17 に確認）ので az1・az2・az4 だけ。
+     */
+    availabilityZoneId: z
       .string()
-      .regex(/^ap-northeast-1[a-d]$/)
-      .default("ap-northeast-1c"),
+      .regex(/^apne1-az[124]$/, "apne1-az1・apne1-az2・apne1-az4 のどれか（apne1-az3 は VPC origin が使えない）")
+      .default("apne1-az1"),
     rootVolumeGb: z.number().int().min(10).max(40).default(12),
     dataVolumeGb: z.number().int().min(10).max(200).default(16),
     /** データの EBS の週 1 回のスナップショットの世代数（0 なら作らない。S3 の論理バックアップが主）。 */
     snapshotRetain: z.number().int().min(0).max(8).default(2),
     /** S3 の論理バックアップの保持日数（ライフサイクルで消す: 費用が増え続けない）。 */
     backupRetentionDays: z.number().int().min(7).max(400).default(35),
-    /** 画面の FQDN（独自ドメイン。Let's Encrypt の証明書・Cognito の戻り先）。本人が用意する: docs/AWS_OPERATIONS.md U2。 */
-    siteHost: z.string().regex(/^(?=.{4,253}$)([a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z]{2,63}$/),
-    /** Route 53 のホストゾーン（既にあれば ID、無ければ createZone で作る。親のドメインから NS を委任する）。 */
-    dnsZoneId: z
-      .string()
-      .regex(/^Z[0-9A-Z]{5,32}$/)
-      .optional(),
-    createZone: z.boolean().default(false),
-    zoneName: z.string().optional(),
     /** Cognito の hosted UI のドメインの接頭辞（<prefix>.auth.ap-northeast-1.amazoncognito.com。無料）。 */
     cognitoDomainPrefix: z.string().regex(/^[a-z0-9](?:[a-z0-9-]{1,61}[a-z0-9])$/),
     /** 本人のメール（Cognito の利用者・oauth2-proxy の許可・アプリの ALLOWED_USERS）。1 名だけ（web REQUIREMENTS §0）。 */
@@ -105,16 +110,9 @@ export const AwsInfraConfig = AwsInfraBase.superRefine((c, ctx) => {
   for (const k of Object.keys(c.appEnv))
     if (FORBIDDEN_APP_KEYS.test(k))
       ctx.addIssue({ code: "custom", message: `appEnv に秘密（${k}）を入れない（SSM に置く）`, path: ["appEnv"] });
-  const arm = c.instanceType.startsWith("t4g");
-  if (c.dnsZoneId === undefined && !c.createZone)
-    ctx.addIssue({
-      code: "custom",
-      message: "dnsZoneId か createZone=true のどちらかが必要（画面の HTTPS に独自ドメインを使う）",
-      path: ["dnsZoneId"],
-    });
-  if (c.createZone && (c.zoneName === undefined || (!c.siteHost.endsWith(`.${c.zoneName}`) && c.siteHost !== c.zoneName)))
-    ctx.addIssue({ code: "custom", message: "createZone のときは zoneName（siteHost を含む）が必要", path: ["zoneName"] });
-  void arm;
+  // 公開 URL は CloudFront の標準のドメイン（d*.cloudfront.net）で、Pulumi が作ってから決まる。独自ドメイン・DNS の設定は持たない（I-050）
+  for (const k of INFRA_OWNED_APP_KEYS)
+    if (k in c.appEnv) ctx.addIssue({ code: "custom", message: `appEnv に ${k} を入れない（infra が決める値）`, path: ["appEnv"] });
 });
 export type AwsInfraConfig = z.infer<typeof AwsInfraConfig>;
 
@@ -129,7 +127,6 @@ export function readConfig(get: (k: string) => string | undefined): AwsInfraConf
     "appEnv",
     "controller",
     "hostImages",
-    "createZone",
     "enableWebPush",
     "rootVolumeGb",
     "dataVolumeGb",

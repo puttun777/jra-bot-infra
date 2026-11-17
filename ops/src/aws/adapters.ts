@@ -4,7 +4,6 @@
  * 例外のメッセージにオブジェクトの内容・資格情報を入れない（種類と HTTP ステータスだけ）。
  */
 import { DescribeInstancesCommand, EC2Client, StartInstancesCommand, StopInstancesCommand } from "@aws-sdk/client-ec2";
-import { ChangeResourceRecordSetsCommand, Route53Client } from "@aws-sdk/client-route-53";
 import { GetObjectCommand, PutObjectCommand, S3Client, S3ServiceException } from "@aws-sdk/client-s3";
 import { GetParameterCommand, SSMClient } from "@aws-sdk/client-ssm";
 import { ConflictError, UnknownOutcomeError } from "../ports.js";
@@ -101,18 +100,18 @@ export class Ec2 {
   }
 }
 
-/** Route 53 の A レコード（公開 IP は起動のたびに変わる。TTL 60 秒）。 */
-export async function upsertA(r53: Route53Client, zoneId: string, name: string, ip: string): Promise<void> {
-  if (!/^\d{1,3}(\.\d{1,3}){3}$/.test(ip)) throw new Error("IPv4 の形式ではない");
-  await r53.send(
-    new ChangeResourceRecordSetsCommand({
-      HostedZoneId: zoneId,
-      ChangeBatch: {
-        Comment: "jra-bot controller",
-        Changes: [{ Action: "UPSERT", ResourceRecordSet: { Name: name, Type: "A", TTL: 60, ResourceRecords: [{ Value: ip }] } }],
-      },
-    }),
-  );
+/**
+ * 公開 URL（CloudFront）経由の準備完了の確認: GET <SITE_URL>/_jrabot/health が 200 で本文が ok。CloudFront → VPC origin → Caddy（合言葉の検査）までの経路を確かめる。
+ * 失敗・時間切れは false（例外にしない）。リダイレクトは追わない。
+ */
+export async function probeSite(siteUrl: string, fetchFn: typeof fetch = fetch): Promise<boolean> {
+  if (!/^https:\/\/d[a-z0-9]{6,32}\.cloudfront\.net$/.test(siteUrl)) return false;
+  try {
+    const r = await fetchFn(`${siteUrl}/_jrabot/health`, { redirect: "manual", signal: AbortSignal.timeout(5_000) });
+    return r.status === 200 && (await r.text()).trim() === "ok";
+  } catch {
+    return false;
+  }
 }
 
 /** SSM の SecureString（値はログに出さない）。無ければ undefined。 */
@@ -150,6 +149,5 @@ export async function notifyDiscord(webhook: string | undefined, title: string, 
 export const clients = {
   s3: (): S3Client => new S3Client({ region: REGION }),
   ec2: (): EC2Client => new EC2Client({ region: REGION }),
-  route53: (): Route53Client => new Route53Client({ region: REGION }),
   ssm: (): SSMClient => new SSMClient({ region: REGION }),
 };

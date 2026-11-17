@@ -26,7 +26,8 @@ export const ecr_registry = out.ecrRegistry;
 export const cognito_issuer = out.cognitoIssuer;
 export const cognito_client_id = out.cognitoClientId;
 export const site_url = out.siteUrl;
-export const zone_name_servers = out.zoneNameServers;
+export const cloudfront_distribution_id = out.distributionId;
+export const vpc_origin_id = out.vpcOriginId;
 export const host_images = JSON.stringify({
   mysql: cfg.hostImages.mysql,
   caddy: cfg.hostImages.caddy,

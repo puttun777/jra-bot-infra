@@ -23,12 +23,12 @@
   "dependencies": {
     "@aws-sdk/client-ec2": "3.1160.0",
     "@aws-sdk/client-lambda": "3.1160.0",
-    "@aws-sdk/client-route-53": "3.1160.0",
     "@aws-sdk/client-s3": "3.1160.0",
     "@aws-sdk/client-ssm": "3.1160.0",
     "@pulumi/aws": "7.52.1",
     "@pulumi/gcp": "10.2.0",
     "@pulumi/pulumi": "3.270.0",
+    "@pulumi/random": "4.21.6",
     "ajv": "8.20.0",
     "zod": "4.6.7"
   }

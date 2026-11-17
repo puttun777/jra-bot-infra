@@ -1,6 +1,6 @@
 /**
  * AWS の起動・停止の制御（Lambda）の判断。**純粋な関数だけ**（AWS に触れない）。入力は運用状態・ホストの報告・EC2 の状態・開催予定・時刻で、
- * 出力は次の運用状態と、実行すべき副作用（StartInstances・StopInstances・ビーコン・DNS・通知）。副作用はどれも冪等なので、
+ * 出力は次の運用状態と、実行すべき副作用（StartInstances・StopInstances・ビーコン・通知）。副作用はどれも冪等なので、
  * 5 分ごとの定期実行（EventBridge Scheduler）と要求のたびに「あるべき姿へ 1 歩近づける」だけでよい（収束型）。
  *
  * 安全の原則:
@@ -33,8 +33,6 @@ export interface Effects {
   readonly stop: "none" | "normal" | "force";
   /** ビーコンを書き直す（運用状態の beacon と食い違うとき）。 */
   readonly beacon: Mode | undefined;
-  /** DNS の A レコードを書き直す（公開 IP が変わったとき）。 */
-  readonly dnsIp: string | undefined;
   /** key は一度だけの警告の印（送れなかったら Lambda が印を外して、次の実行で送り直す）。 */
   readonly notify: readonly { readonly title: string; readonly body: string; readonly key?: string }[];
 }
@@ -44,10 +42,6 @@ export class RequestRejected extends Error {
 }
 
 const MIN = 60_000;
-/** 動いている間に DNS を書き直す間隔（IP は変わらなくても、前回の書込みの失敗を直す）。Route 53 の変更の API は無料。 */
-const DNS_REFRESH_MINUTES = 60;
-/** 止まっている間の A レコードの向け先（文書用のアドレス。どこにも届かない）。手放した公開 IP を他人が拾っても、この名前の証明書を取らせない。 */
-export const DNS_SINKHOLE = "192.0.2.1";
 /** 手動の開催日・飛ばす日の上限（状態の検査の上限と同じ。超える要求は拒否して、状態を読めなくしない）。 */
 const MAX_MANUAL_RACEDAYS = 30;
 const MAX_SKIP_DATES = 60;
@@ -332,6 +326,8 @@ export function reconcile(
   cfg: ControllerConfig,
   /** 公開中のビーコンの mode（読めなければ undefined = 書き直す）。書込みの失敗・取り違えを次の実行で直すため、記録ではなく実物と比べる。 */
   publishedBeacon: Mode | undefined,
+  /** 公開 URL（CloudFront）経由で /_jrabot/health が 200 か（STARTING のときだけ Lambda が確かめる。undefined = 確かめていない）。 */
+  edgeReady?: boolean,
 ): { state: AwsOpsState; effects: Effects } {
   const now = ms(nowIso);
   let s = syncRacedayHolds(input, plan, host, now, cfg);
@@ -400,7 +396,9 @@ export function reconcile(
         host.phase === "READY" &&
         host.ready.mysql &&
         host.ready.dashboard &&
-        host.seen_seq >= input.seq
+        host.seen_seq >= input.seq &&
+        // CloudFront 経由で届くこと（公開 URL の /_jrabot/health。確かめていない = undefined は妨げない: SITE_URL の無い試験・手元）
+        edgeReady !== false
       ) {
         s = S.setMode(s, "NORMAL", "NORMAL", "controller", "ホストの準備完了", nowIso) as AwsOpsState;
         s.aws.running_since = s.aws.running_since ?? nowIso;
@@ -410,7 +408,7 @@ export function reconcile(
           s,
           `start-timeout-${s.aws.start_requested_at}`,
           "起動が完了しない",
-          `${cfg.startTimeoutMinutes} 分を超えた（EC2=${instance.state}）。起動の要求は続ける`,
+          `${cfg.startTimeoutMinutes} 分を超えた（EC2=${instance.state}・CloudFront 経由=${edgeReady === undefined ? "未確認" : edgeReady ? "OK" : "届かない"}）。起動の要求は続ける`,
           notify,
         );
       }
@@ -491,17 +489,7 @@ export function reconcile(
   // workloads は NORMAL・STARTING のときだけ有効（停止中は何も許さない）
   s.workloads = s.mode === "NORMAL" || s.mode === "STARTING" ? workloads : { raceday: false, batch: false };
   const beacon = beaconMode(s, host, now, cfg);
-  // DNS: IP が変わったとき（起動のたびに変わる）と、念のため 1 時間ごとに書き直す（前回の書込みの失敗を自然に直す）。記録は状態と一緒に CAS で書く
-  // 止まっている間は文書用のアドレスに向ける（手放した公開 IP を他人が拾っても、この名前に届かない・証明書を取らせない）
-  const dnsTarget = running ? instance.publicIp : instance.state === "stopped" ? DNS_SINKHOLE : undefined;
-  // 起動中は毎回書き直す（同時の呼び出しの古い判断が文書用のアドレスを後から書いても、すぐ直す）
-  const dnsStale =
-    s.aws.last_dns === null ||
-    s.aws.last_dns.ip !== dnsTarget ||
-    now - ms(s.aws.last_dns.at) > DNS_REFRESH_MINUTES * MIN ||
-    (running && s.mode === "STARTING");
-  const dnsIp = dnsTarget !== undefined && dnsStale ? dnsTarget : undefined;
-  if (dnsIp !== undefined) s.aws.last_dns = { ip: dnsIp, at: nowIso };
+  // 公開 URL は CloudFront の標準のドメイン（VPC origin はインスタンスの private の名前に届く。停止・起動で IP が変わっても DNS の更新は要らない: I-050）
   // 開催の計画が無い・古い（動いている間だけ更新される）: 開催日に自動で起動できないので知らせる（1 日 1 回）
   if (plan === undefined || now - ms(plan.generated_at) > PLAN_STALE_DAYS * 24 * 60 * MIN)
     alertOnce(
@@ -511,7 +499,7 @@ export function reconcile(
       "開催日の自動起動ができない。aws-view で一度起動する（計画を更新する）か、aws-raceday add で登録する",
       notify,
     );
-  return { state: s, effects: { start, stop, beacon: publishedBeacon === beacon ? undefined : beacon, dnsIp, notify } };
+  return { state: s, effects: { start, stop, beacon: publishedBeacon === beacon ? undefined : beacon, notify } };
 }
 
 /** 本人向けの状態の要約（status の出力・workflow の表示）。秘密は含まない。 */

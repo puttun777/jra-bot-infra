@@ -29,6 +29,22 @@ jobs:
         run: npm run --silent bundle:aws
       - name: Pulumi（AWS）の定義の mock 試験（資源は作らない。実 AWS の preview ではない。件数・skip を JUnit XML で検査）
         run: node pulumi-aws/run-tests.mjs
+  aws-edge:
+    # CloudFront の後ろのリバースプロキシ（pulumi-aws/host/Caddyfile）を実物の Caddy（digest 固定）で動かし、合言葉・Host・識別ヘッダの除去・
+    # 経路（/internal・/v1/agent・/logout・/_jrabot/health）を確かめる。実 CloudFront・実 AWS ではない
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: "24.22.2"
+      - name: リバースプロキシの結合試験
+        env:
+          CADDY_IMAGE: caddy:2.11.6@sha256:3422ce6de165df66534f9b9ba50efaf457114ec961763cc52f5dbdaac2972d73
+        run: node ops/it/caddy-edge.mjs
   aws-backup-restore:
     # MySQL のバックアップ（hostctl と同じ mysqldump の引数）→ 別の MySQL への復元 → 全表のチェックサムの一致。合成データだけ（実データ・実 AWS なし）
     runs-on: ubuntu-latest
@@ -59,11 +75,11 @@ jobs:
           if git ls-files | grep -E '\.(tfstate|tfvars)(\.|$)|\.tfstate\.backup$|(^|/)\.terraform/'; then echo "::error::tfstate/tfvars/.terraform が追跡されている"; exit 1; fi
   ci-gate:
     name: ci gate
-    needs: [ops-tests, terraform, aws-backup-restore]
+    needs: [ops-tests, terraform, aws-backup-restore, aws-edge]
     if: always()
     runs-on: ubuntu-latest
     steps:
       - name: 必要なジョブがすべて success であること（skipped を成功扱いにしない）
         run: |
           echo '${{ toJSON(needs) }}'
-          [ "${{ needs.ops-tests.result }}" = success ] && [ "${{ needs.terraform.result }}" = success ] && [ "${{ needs.aws-backup-restore.result }}" = success ]
+          [ "${{ needs.ops-tests.result }}" = success ] && [ "${{ needs.terraform.result }}" = success ] && [ "${{ needs.aws-backup-restore.result }}" = success ] && [ "${{ needs.aws-edge.result }}" = success ]

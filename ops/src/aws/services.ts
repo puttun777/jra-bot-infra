@@ -22,7 +22,7 @@ export interface ContainerSpec {
   /** 値に秘密を含む環境変数のファイル（root だけが読める。docker inspect には出るが、引数・ログには出さない）。 */
   readonly envFiles: readonly string[];
   readonly mounts: readonly Mount[];
-  /** 公開するポート（"127.0.0.1:18081:8080" のようにホストの 127.0.0.1 に限るか、80/443 だけ）。 */
+  /** 公開するポート（"127.0.0.1:18081:8080" のようにホストの 127.0.0.1 に限るか、80 だけ。80 は SG で CloudFront の VPC origin からだけ届く）。 */
   readonly ports: readonly string[];
   readonly memory: string;
   readonly readOnly: boolean;
@@ -47,9 +47,18 @@ export interface HostImages {
 export interface ServiceSettings {
   readonly stateBucket: string;
   readonly modelsBucket: string;
+  /** 公開 URL のホスト（CloudFront の標準のドメイン d*.cloudfront.net。S3 の control/site.json）。 */
   readonly siteHost: string;
   readonly cognitoIssuer: string;
   readonly cognitoClientId: string;
+  /** Cognito の hosted UI のドメイン（<prefix>.auth.ap-northeast-1.amazoncognito.com。ログアウトの先）。 */
+  readonly cognitoDomain: string;
+}
+
+/** /logout の行き先（oauth2-proxy の sign_out の rd）: Cognito のログアウト → 公開 URL の /。Caddy の環境変数に入れるので URL エンコード済み。 */
+export function logoutTarget(s: Pick<ServiceSettings, "siteHost" | "cognitoClientId" | "cognitoDomain">): string {
+  const back = encodeURIComponent(`https://${s.siteHost}/`);
+  return encodeURIComponent(`https://${s.cognitoDomain}/logout?client_id=${encodeURIComponent(s.cognitoClientId)}&logout_uri=${back}`);
 }
 
 export const NETWORK = "jrabot";
@@ -166,6 +175,8 @@ export function services(
         "--scope=openid email",
         "--code-challenge-method=S256",
         `--redirect-url=https://${s.siteHost}/oauth2/callback`,
+        // ログアウトの後の Cognito のログアウトへの移動を許す（それ以外の外部への rd は拒否のまま）
+        `--whitelist-domain=${s.cognitoDomain}`,
         "--cookie-name=__Host-jrabot",
         "--cookie-secure=true",
         "--cookie-samesite=lax",
@@ -187,13 +198,15 @@ export function services(
       ip: FIXED_IPS["caddy"],
       container: "jrabot-caddy",
       image: img.caddy,
-      env: { SITE_HOST: s.siteHost },
-      envFiles: [],
-      mounts: [ro("/opt/jrabot/Caddyfile", "/etc/caddy/Caddyfile"), { source: "/data/caddy", target: "/data", readOnly: false }],
-      ports: ["80:80", "443:443"],
+      env: { SITE_HOST: s.siteHost, LOGOUT_TARGET: logoutTarget(s) },
+      // CloudFront → オリジンの合言葉（ORIGIN_VERIFY。root だけが読める env ファイル）
+      envFiles: [`${RUN}/env/caddy.env`],
+      mounts: [ro("/opt/jrabot/Caddyfile", "/etc/caddy/Caddyfile")],
+      // TLS は CloudFront で終わる（証明書を持たない）。80 番だけ
+      ports: ["80:80"],
       memory: "64m",
       readOnly: true,
-      tmpfs: ["/tmp:rw,size=16m", "/config:rw,size=8m"],
+      tmpfs: ["/tmp:rw,size=16m", "/config:rw,size=8m", "/data:rw,size=8m"],
       capAdd: ["NET_BIND_SERVICE"],
     },
   };
@@ -263,7 +276,7 @@ export function job(kind: JobKind, img: HostImages, s: ServiceSettings, containe
 /** `docker run` の引数（-d または --rm）。安全の条件はここで一律に付ける。 */
 export function dockerRunArgs(spec: ContainerSpec, mode: { detach: boolean; remove: boolean }): string[] {
   for (const p of spec.ports) {
-    if (!/^(127\.0\.0\.1:\d{4,5}:\d{2,5}|80:80|443:443)$/.test(p)) throw new Error(`公開できないポート: ${p}`);
+    if (!/^(127\.0\.0\.1:\d{4,5}:\d{2,5}|80:80)$/.test(p)) throw new Error(`公開できないポート: ${p}`);
   }
   if (spec.name === "mysql" && spec.ports.length > 0) throw new Error("MySQL を公開しない");
   if (spec.name in FIXED_IPS && (spec.ip === undefined || !NO_IMDS_IP.test(spec.ip)))

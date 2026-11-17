@@ -58,7 +58,6 @@ export const AwsSectionSchema = z.looseObject({
   completed_racedays: z.array(date).max(60).default([]),
   skip_dates: z.array(date).max(60).default([]),
   manual_racedays: z.array(ManualRacedaySchema).max(30).default([]),
-  last_dns: z.looseObject({ ip: z.string(), at: ts }).nullable().default(null),
   last_stop: z
     .looseObject({ at: ts, clean: z.boolean(), backup_ok: z.boolean().nullable(), forced: z.boolean(), reason: shortText })
     .nullable()
