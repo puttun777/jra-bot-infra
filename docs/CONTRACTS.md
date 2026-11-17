@@ -70,6 +70,7 @@
 
 ## 4e. 2026-11-17 同期（web CONTRACTS 0.4.20。公開 URL は CloudFront の標準のドメイン: web D-288・infra I-050）
 - **入口**（web CONTRACTS §11.4）: `site_url = https://<distribution>.cloudfront.net`。CloudFront（キャッシュしない・AllViewer）→ VPC origin → Caddy（合言葉 `X-Origin-Verify`・Host の検査・識別のヘッダの除去・`X-Forwarded-Proto: https`）→ `/v1/agent/*` は ingest、他は oauth2-proxy → dashboard。`/internal` は 404。停止中・起動中（502/504）は 503 の案内（`X-Ops-Mode` なし）。
+- **入口の追補（レビュー I-051 の修正。web CONTRACTS 0.4.20 の §11.4 に反映）**: Caddy はパスに `;`・`\`・`/./`・`/../`・`%2e`・`%2f`・`%5c`・`%3b`・`%25`・`%00` を含む要求を 400（クエリは対象外）。捨てるヘッダは `X-Forwarded-*`・`X-Auth-Request-*`・`Forwarded`・`X-Real-Ip`・IAP のヘッダ。oauth2-proxy は `--pass-host-header=true`。復元の直後にも本人の行を `INSERT IGNORE`。
 - **アプリの環境変数は変えない**。`COGNITO_ISSUER`・`COGNITO_CLIENT_ID` はホストが S3 `control/site.json`（infra 固有。`schema_version`・`site_host`・`cognito_issuer`・`cognito_client_id`・`cognito_domain`）から作る。`appEnv` で infra の決める値（`RUNTIME_PLATFORM`・`COGNITO_*`・`ALLOWED_USERS`・`ADMIN_USERS`・`OPS_MODE_SOURCE`）を上書きできない。
 - **本人の利用者の行**: ホストが schema の確認の後に `tenant(1)`・`app_user(本人のメール, ADMIN)` を `INSERT IGNORE`。
 - **Windows エージェント**: `server.base_url = <site_url>`（web agent README）。

@@ -41,7 +41,7 @@ EC2 t4g.small（東京・IGW へ経路のあるサブネット・公開 IPv4 は
 | DB | EC2 上の MySQL 8.4（コンテナ）+ **データ用 EBS gp3 16 GB**（`protect`・`retainOnDelete`） | RDS は停止中もストレージ・バックアップ課金があり、7 日で自動起動する。Aurora Serverless v2 は最低 ACU の費用。アプリの MySQL・Doma・Flyway はそのまま |
 | 状態・成果物 | S3（ops-state・beacon・models・backups・site〔停止中の案内のページ〕） | GCS の置換え。運用状態は条件付き書込み（If-Match/If-None-Match）で CAS |
 | 起動・停止・状態 | Lambda（Node 24・arm64・**VPC なし**）+ EventBridge Scheduler（5 分ごと） | Cloud Scheduler・Cloud Run Jobs（ops）の置換え。VPC に入れないので NAT 不要 |
-| 公開 URL・HTTPS | **CloudFront の標準のドメイン**（既定の証明書・従量課金。flat-rate の料金プランは使わない） | 独自ドメインを持たない（本人の方針）。EC2 の IP が変わっても URL が変わらない。キャッシュしない（§6.2）。PriceClass_200（日本を含む） |
+| 公開 URL・HTTPS | **CloudFront の標準のドメイン**（既定の証明書・従量課金。flat-rate の料金プランは使わない: VPC origin は Business〔$200/月〕以上だけ） | 独自ドメインを持たない（本人の方針）。EC2 の IP が変わっても URL が変わらない。キャッシュしない（§6.2）。PriceClass_200（日本を含む） |
 | CloudFront → EC2 | **VPC origin**（EC2 を直接の origin に。追加料金なし） | EC2 に公開のポートを開けない（SG は VPC origin の管理 SG からだけ）。ALB（月 $17.7〜）・NAT を使わない。代替案と費用は §10 |
 | 本人の認証 | Cognito ユーザープール（**Lite**・管理者だけが作成・MFA 必須）+ oauth2-proxy | IAP の置換え。ALB を使わない。アプリは ID トークンの署名を JWKS で検証（web cloud-aws `CognitoIdTokenVerifier`） |
 | 秘密 | SSM Parameter Store の SecureString（標準・AWS 管理キー） | Secret Manager の置換え。Secrets Manager は 1 件 $0.40/月のため不採用 |
@@ -53,7 +53,7 @@ EC2 t4g.small（東京・IGW へ経路のあるサブネット・公開 IPv4 は
 | 制御の監視 | CloudWatch のアラーム 2 個（Lambda のエラーが 1 時間に 3 回以上・定期実行が 1 時間来ない）→ SNS → メール | 制御が動かないと自動停止も通知も止まるため。購読の確認は本人（U9） |
 | バックアップ | mysqldump（整合）→ S3（SHA-256 確認・バージョニング・保持 35 日）+ EBS スナップショット（DLM・週 1・2 世代） | Cloud SQL の自動バックアップの置換え |
 
-不採用: 独自ドメイン・Route 53・ACM・Let's Encrypt（I-050 で削除）、NAT Gateway・ALB・RDS・Elastic IP（停止中も課金）・AWS WAF（月 $5〜 + ルール。本人だけの利用で、アプリの認証が必須のため）・CloudFront の flat-rate の料金プラン（VPC origin が使えない）・Secrets Manager・CloudWatch Agent・ECS/Fargate（常駐の費用）・Python。
+不採用: 独自ドメイン・Route 53・ACM・Let's Encrypt（I-050 で削除）、NAT Gateway・ALB・RDS・Elastic IP（停止中も課金）・AWS WAF（月 $5〜 + ルール。本人だけの利用で、アプリの認証が必須のため）・CloudFront の flat-rate の料金プラン（Free・Pro は VPC origin が使えず、使える Business は $200/月）・Secrets Manager・CloudWatch Agent・ECS/Fargate（常駐の費用）・Python。
 
 ## 3. 運用モードと起動目的（hold）
 - 運用状態（web CONTRACTS §7 の ops-state）は S3 `state/ops-state.json`。GCP と同じ `mode`（STOPPED・STARTING・NORMAL・STOPPING）に、AWS の節 `aws`（起動目的の一覧・停止の記録など）と、アプリに渡す **`workloads {raceday, batch}`**（web D-282）を足した。
@@ -88,7 +88,8 @@ EC2 t4g.small（東京・IGW へ経路のあるサブネット・公開 IPv4 は
 - 運用状態が壊れていたら何もしない（推測で書き換えない）。**書く前にも検査し、通らなければ例外**（Lambda のエラー → アラーム。黙って止まらない）。状態は上限を超えないように作る（手動の開催日 30 件・飛ばす日 60 件〔昨日より前は捨てる〕・開催日の hold 3 つ・日付は昨日〜90 日先）。
 - **定期実行の失敗**（4 回の競合・起動・停止・ビーコン・通知の失敗）は例外にする（アラーム）。送れなかった一度だけの警告は印を外して次の実行で送り直す。再実行（Re-run）の要求は元の時刻を使わない。ホストの報告が壊れていたら「無い」として扱う。
 - 要求の時刻は GitHub の実行の作成時刻（runner の待ちで閲覧の延長と終了の順序が逆転しない）。
-- **CloudFront 経由の確認**（`probeSite`）: `SITE_URL` が `https://d<英数字>.cloudfront.net` の形のときだけ、リダイレクトを追わず 5 秒で打ち切る。200 で本文が `ok` のときだけ準備完了。確認の失敗は NORMAL にしないだけで、例外にはしない（起動の時間切れの通知で分かる）。
+- **CloudFront 経由の確認**（`probeSite`）: Lambda の `SITE_URL`（必須。`https://d<英数字>.cloudfront.net` の形だけ）に、リダイレクトを追わず 5 秒で打ち切って GET。200 で本文が `ok` のときだけ準備完了。届かない・確かめられないときは NORMAL にしない（例外にはしない。起動の時間切れの通知で分かる）。
+- **制御が生きている印**: EC2 が動いている間は `aws.last_alive_at` を 1 時間ごとに書く（状態が変わらなくても運用状態が書かれる）。ホストはこれが 3 時間以上書かれていないときだけ「制御が止まっている」とみなす（§5）。
 - **初回の構築との競合**: Scheduler（定期実行）は Pulumi で distribution・`control/site.json`・SG の規則の**後**に作る（`dependsOn`）。VPC origin の作成には EC2 が動いている必要があり、作成の途中で制御が EC2 を止めることはない（§11 の V-2）。
 
 ## 5. ホスト（EC2）
@@ -116,17 +117,18 @@ EC2 t4g.small（東京・IGW へ経路のあるサブネット・公開 IPv4 は
 | 管理者 | SSM Session Manager（コンソール・CloudShell） | SSH なし・22 番を開けない |
 
 ### 6.2 CloudFront の設定（キャッシュ・転送）
-- 既定の動作（`*`・origin = EC2）: 管理キャッシュポリシー **CachingDisabled**（`4135ea2d-…`。キャッシュしない・キャッシュキーなし）、管理 origin request ポリシー **AllViewer**（`216adef6-…`。ビューアの全ヘッダ〔Host・Cookie・Authorization〕・全 Cookie・全クエリを転送）、メソッドは GET・HEAD・OPTIONS・PUT・POST・PATCH・DELETE、`redirect-to-https`、圧縮しない（Caddy が gzip）。Set-Cookie・ログインの応答はキャッシュに入らないので他人に配られない。
-- エラーの応答: 400・403・404・405・414・416・500・501・503 は **TTL 0**（キャッシュしない・置き換えない。アプリ・ingest の 503 + `X-Ops-Mode` はそのまま）。**502・504（EC2 が止まっている・起動中・Caddy の上流が未起動）は 503 と S3 の案内のページ**（TTL 0）。起動の後に古いエラーが残らない。
+- 既定の動作（`*`・origin = EC2）: 管理キャッシュポリシー **CachingDisabled**（`4135ea2d-…`。キャッシュしない・キャッシュキーなし）、管理 origin request ポリシー **AllViewer**（`216adef6-…`。ビューアの全ヘッダ〔Host・Cookie・Authorization〕・全 Cookie・全クエリを転送。CloudFront は既定では Authorization を消すが、Managed-AllViewer を使えば転送する: 公式「Configure CloudFront to forward the Authorization header」。今の経路は閲覧者の Authorization に頼らない〔人は Cookie、エージェントは X-Signature 等〕）、メソッドは GET・HEAD・OPTIONS・PUT・POST・PATCH・DELETE、`redirect-to-https`、圧縮しない（Caddy が gzip）。Set-Cookie・ログインの応答はキャッシュに入らないので他人に配られない。
+- エラーの応答: 400・403・404・405・414・416・500・501・503 は **TTL 0**（キャッシュしない・ページを指定しない = origin の応答をそのまま返す〔公式「Control how long CloudFront caches errors」〕。アプリ・ingest の 503 + `X-Ops-Mode`・`Retry-After`・4xx の JSON がそのまま届くことは実環境で確かめる: §11 V-3）。**502・504（EC2 が止まっている・起動中・Caddy の上流が未起動）は 503 と S3 の案内のページ**（TTL 0。案内のページにはリポジトリ名・手順を書かない）。起動の後に古いエラーが残らない。
 - `/_offline/*`（案内のページ）: origin = S3（OAC・SigV4・常に署名。バケットは公開しない。ポリシーは distribution の ARN の条件付きで `_offline/*` の読取りだけ）。
-- **CloudFront → EC2**: VPC origin（http-only・80 番・接続 3 秒×1 回・読取り 60 秒）。カスタムヘッダ `X-Origin-Verify: <48 文字の乱数>`（Pulumi の `random` で構築時に作り、SSM の SecureString にも置く。ホストは boot で読んで Caddy に渡す）。
+- **CloudFront → EC2**: VPC origin（http-only・80 番・接続 5 秒×2 回〔起動直後の遅い接続で「停止中」にしない。停止中の案内までは最大 約 10 秒〕・読取り 60 秒）。カスタムヘッダ `X-Origin-Verify: <48 文字の乱数>`（Pulumi の `random` で構築時に作り、SSM の SecureString にも置く。ホストは boot で読んで Caddy に渡す。閲覧者が同名のヘッダを付けても CloudFront のカスタムヘッダが上書きする）。
 
 ### 6.3 CloudFront から EC2 までの保護（HTTPS はブラウザ → CloudFront まで）
 ブラウザから CloudFront までが HTTPS であることと、CloudFront から EC2 までの保護は別に満たす:
 1. **到達の制限**: EC2 の SG の受信は 1 つだけ（`CloudFront-VPCOrigins-Service-SG*` からの TCP 80）。インターネット・同じ VPC の他・SSH は届かない。公開 IPv4 は外向き用（受信の規則が無い）。VPC origin は AWS の網の中を通る（公開のインターネットを通らない）。
 2. **合言葉のヘッダ**: VPC origin の管理 SG は「このアカウントの CloudFront の distribution」を通すため、同じアカウントに別の distribution を作った場合などに備え、Caddy が `X-Origin-Verify` を検査する（無い・違う・前方一致は 403 で接続を閉じる）。合言葉は上流へ渡さない。
 3. **Host の検査**: `Host` が公開のホスト名（`control/site.json`）でなければ 421。dashboard の CSRF の Origin == Host の検査と、Cookie・戻り先の URL が公開 URL と一致する。
-4. **識別のヘッダを信じない**: Caddy が `X-Forwarded-User`・`-Email`・`-Preferred-Username`・`-Groups`・`-Access-Token`・`X-Auth-Request-*`・IAP のヘッダを捨て、`X-Forwarded-Proto: https`・`X-Forwarded-Host` を付け直す。dashboard は `Authorization` の ID トークンの**署名**を検証する（ヘッダの名前・値だけでは入れない）。
+3b. **パスの検査**: Caddy の経路の一致は整えた後のパス（`..`・`%2e` の解決後）で行い、上流へは元のパスを渡す。そのずれで `/internal` の遮断を迂回させないよう、パスに `;`・`\`・`/./`・`/../`・`%2e`・`%2f`・`%5c`・`%3b`・`%25`・`%00` を含む要求は 400（クエリは対象外）。
+4. **識別のヘッダを信じない**: Caddy が `X-Forwarded-*`（User・Email・Preferred-Username・Groups・Access-Token・Uri を含む）・`X-Auth-Request-*`（Redirect を含む）・`Forwarded`・`X-Real-Ip`・IAP のヘッダを捨て、`X-Forwarded-Proto: https`・`X-Forwarded-Host` を付け直す（oauth2-proxy は `--reverse-proxy` で X-Auth-Request-Redirect・X-Forwarded-Uri を戻り先に使うため）。oauth2-proxy は `--pass-host-header=true`（Host を変えない）。dashboard は `Authorization` の ID トークンの**署名**を検証する（ヘッダの名前・値だけでは入れない）。
 5. **アプリの認証**: 上の 1〜4 を全部通っても、Cognito の ID トークンと本人の許可が無ければ 401/403。
 - **CloudFront → EC2 は暗号化しない**（HTTP）。AWS の網の中で、上の 1〜4 で守る。暗号化が必要なら origin に自己署名の証明書（VPC origin は origin の証明書の検証が必要で、公開の CA の証明書には名前が要る → 独自ドメインが要る）または ALB が必要で、費用・ドメインの要件に合わない（§10）。
 - 試験: Caddy の実物での結合試験（infra `ops/it/caddy-edge.mjs`・CI の `aws-edge`。合成）、Pulumi の mock の試験（SG・CloudFront の設定）、web の HTTP の試験（認証・認可・CSRF）。**実 CloudFront・実 VPC origin では未検証**（§11）。
@@ -134,7 +136,7 @@ EC2 t4g.small（東京・IGW へ経路のあるサブネット・公開 IPv4 は
 ## 7. データ保護
 - データ用 EBS は Pulumi で `protect`・`retainOnDelete`、EC2 は `disableApiTermination`、user data はファイルシステムがあれば初期化しない。コンテナの作り直し・EC2 の停止で消えない。
 - バックアップ: 停止のたび・deploy の前・restore の前・手動（`aws-backup`）に mysqldump `--single-transaction`（整合）→ gzip → S3（`IfNoneMatch` で上書きしない・SHA-256 を記録して読み直して確認）。**失敗を成功と報告しない**（ホストの報告 → 制御の `last_stop.backup_ok` → 通知）。保持 35 日（ライフサイクル）・旧版 7 日。ホストのロールは削除できない。
-- 復元: `jrabot-host restore --key … --confirm RESTORE-<日付>`（**保守の起動目的が 90 分以上残っている NORMAL** のときだけ。開催日・重い処理・ジョブの最中は拒否。直前に現状のバックアップ → dump の最後の行を確認 → DB を作り直して流し込む。流し込みの失敗は直前のバックアップのキーを表示）。合成データで dump → 別の MySQL へ復元 → 全表のチェックサム一致を CI で確認（`ops/it/backup-restore.mjs`。Flyway の実スキーマ 38 表でも確認）。復元の後の boot でも本人の利用者の行は `INSERT IGNORE`（復元した行を変えない）。
+- 復元: `jrabot-host restore --key … --confirm RESTORE-<日付>`（**保守の起動目的が 90 分以上残っている NORMAL** のときだけ。開催日・重い処理・ジョブの最中は拒否。直前に現状のバックアップ → dump の最後の行を確認 → DB を作り直して流し込む。流し込みの失敗は直前のバックアップのキーを表示）。**流し込みの直後に本人の利用者の行を `INSERT IGNORE`**（戻した dump に本人の行が無くても 403 にならない。既存の行は変えない）。合成データで dump → 別の MySQL へ復元 → 全表のチェックサム一致と、復元の後の本人の行（作成・再実行・既存の行を変えない）を CI で確認（`ops/it/backup-restore.mjs`。Flyway の実スキーマ 38 表でも確認）。
 - 実データ・秘密・学習済みモデルを Git に入れない。**COMP-4 の回答までは実データを AWS に入れない**（web UNRESOLVED）。
 
 ## 8. 版数（固定）
@@ -152,12 +154,15 @@ EC2 t4g.small（東京・IGW へ経路のあるサブネット・公開 IPv4 は
 | C: プライベートサブネット + NAT インスタンス | t4g.nano を EC2 と一緒に起動・停止 | 約 $0.0104/時（t4g.nano 約 $0.0054〔推定。t4g は大きさに比例〕+ IPv4 $0.005）→ 100 時間 $1.0 + EBS 8 GB $0.77 | 安いが、管理する EC2 が 2 台になる（更新・起動の順序・故障）。V-1 が通らないときの第一の代替 |
 | D: 公開の origin（EC2 の公開 DNS・CloudFront の prefix list） | VPC origin なし | $0 | 起動のたびに公開 DNS が変わる → distribution の更新（数分〜15 分）が毎回要る。Elastic IP で固定すると $3.65。origin までインターネットを通る → 不採用 |
 | E: ALB + VPC origin | ALB を origin に | $17.7（$0.0243/時）+ LCU | 固定費 → 不採用 |
-| F: CloudFront の flat-rate（Free プラン等） | — | $0〜 | VPC origin が使えない → 不採用（従量課金で使う） |
+| F: CloudFront の flat-rate（Free・Pro・Business） | — | Free・Pro は VPC origin 不可、Business は $200 | 不採用（従量課金で使う） |
+| G: プライベートサブネット + egress-only IGW（IPv6 の外向き） | IPv6 だけで外へ | $0（未確認） | ECR・SSM・S3 の dual-stack の端点、Discord・nodejs.org・AL2023 のリポジトリが IPv6 で届くかの確認が要る。V-1 が通らないときの候補 |
 
 ## 11. 残るリスクと、初回の構築で確かめること（実 AWS が必要。mock・CI では確かめていない）
-- **V-1（IGW 経路のサブネットでの VPC origin）**: AWS の文書の前提はプライベートサブネット。IGW へ経路のあるサブネット（EC2 に公開 IPv4）で VPC origin が作れて、届くかを初回の構築で確かめる。だめなら §10 の C（NAT インスタンス）か A（起動中だけの NAT GW）へ（Pulumi の変更が必要。費用は §10）。
-- **V-2（作成の順序）**: VPC origin の作成には EC2 が Active（running）である必要がある。Pulumi は EC2 → VPC origin → 管理 SG の参照 → SG の規則 → distribution → Cognito の client → site.json → Lambda → Scheduler の順に作る（循環なし）。Scheduler が最後なので、作成の途中で制御が EC2 を止めない。**VPC origin・distribution を作り直す変更**（例: インスタンスの置換え）は EC2 を起動しておく必要がある（`AWS_OPERATIONS.md` §1・§9）。
-- **V-3（停止・起動の後）**: EC2 を止めても VPC origin はインスタンスの ARN で指すので作り直さない想定。止めている間は 502/504 → 503 の案内、起動後に通常に戻ること（エラーをキャッシュしない）を確かめる。
+- **V-1（IGW 経路のサブネットでの VPC origin）**: AWS の文書の前提はプライベートサブネット。IGW へ経路のあるサブネット（EC2 に公開 IPv4）で VPC origin が作れて、届くかを初回の構築で確かめる（公式の「Create a VPC origin (existing distribution)」は、VPC origin に切り替えた後に「サブネットをプライベートにして公開のアクセスを外す」手順で、公開のサブネットでも作れる前提に読める。ただし確認は必要）。だめなら §10 の C（NAT インスタンス）・A（起動中だけの NAT GW）・G（IPv6）へ（Pulumi の変更が必要。費用は §10）。
+- **V-2（作成の順序）**: VPC origin の作成には EC2 が Active（running）である必要がある。Pulumi は IGW・経路表の関連付け → EC2 → VPC origin（待ちは 30 分まで）→ 管理 SG の参照 → SG の規則 → distribution → Cognito の client → site.json → Lambda → Scheduler の順に作る（循環なし）。Scheduler が最後なので、作成の途中で制御が EC2 を止めない（途中で失敗したときの扱いは `AWS_OPERATIONS.md` §1.3）。
+- **インスタンスの置換えは未対応（手作業）**: VPC origin の endpoint（インスタンスの ARN）の変更は、provider ではその場の更新（`UpdateVpcOrigin`）になり、distribution が使っている間は失敗し得る（API の `CannotUpdateEntityWhileInUse`。公式の手順も先に distribution から外す）。EC2 の削除保護とデータの EBS の付け替えも要る。AZ の変更などでインスタンスを置き換えるときは `AWS_OPERATIONS.md` §9 の手作業の手順で行う（自動の置換えは作らない: レビュー B1）。
+- **V-3（停止・起動の後・エラーの応答）**: EC2 を止めても VPC origin はインスタンスの ARN で指すので作り直さない想定。止めている間は 502/504 → 503 の案内、起動後に通常に戻ること（エラーをキャッシュしない）を確かめる。あわせて、CloudFront 経由でも ingest の 503 の `X-Ops-Mode`・`Retry-After` と 4xx の JSON の本文がそのまま届くこと（エージェントの分類が変わらない）。
 - **V-4（管理 SG の名前）**: Pulumi は VPC の中の `CloudFront-VPCOrigins-Service-SG*` を名前で探す。AWS が名前の形を変えたら構築が止まる（安全側）。
-- **V-5（Cognito のログイン）**: CloudFront の URL での callback・logout・MFA・ログインの繰り返しが起きないこと。
-- 合言葉（`X-Origin-Verify`）の交換は手動（Pulumi の `random` を作り直す → `pulumi up` → 次の起動の boot で Caddy が読み直す。`AWS_OPERATIONS.md` §9）。
+- **V-5（Cognito のログイン）**: CloudFront の URL での callback・logout・MFA・ログインの繰り返しが起きないこと。dashboard が見る `Host` が `d*.cloudfront.net` であること（管理の POST が CSRF で 403 にならない）。
+- **V-6（直接の接続の拒否）**: EC2 の公開 IPv4 の 80 番に届かないこと（SG）、合言葉の無い要求が 403 になること。
+- 合言葉（`X-Origin-Verify`）の交換は手動（**EC2 を止めた状態で**: Pulumi の `random` を作り直す → `pulumi up` → 次の起動の boot で Caddy が読み直す。動いている間に行うと Caddy が 403 を返し、Windows エージェントは認証の失敗として送信を止める。`AWS_OPERATIONS.md` §9）。
