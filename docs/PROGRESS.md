@@ -1,13 +1,12 @@
 # PROGRESS（jra-bot-infra）
 最終更新: 2026-11-17（独自ドメインをやめ CloudFront の標準 URL + VPC origin へ。I-050。適用なし）。旧: 2026-11-13（GCP → AWS の移行の設計・実装。I-042〜I-047。適用なし）。旧: 2026-11-09（案 1 の最小化を IaC に反映。I-041）。旧: 2026-11-07（低コスト化の 3 案の再見積り。I-040）。旧: 2026-11-07（web のイメージの公開の権限。I-039。本人の承認待ち）。旧: 2026-11-06（backtest の Job・deploy の BOT_JOBS の修正。I-038）。旧: 2026-11-03（L6: Pulumi の定義・試験・ガード。旧: 2026-11-02 L3 同期: release-manifest v3。L2: ops を TypeScript へ。旧: 2026-11-01 第5段階のコード・workflow・Runbook）
 
-## 2026-11-17 中断・再開の記録（CloudFront の標準 URL の作業。**作業中**。秘密は含まない）
-- **ブランチ・コミット**: infra `claude/jra-bot-gcp-to-aws-uqla8y` = ac02611（5a5269d 実装 + ac02611 文書。push 済み・PR はまだ無い）、web 同名のブランチ = eb3d7ef（push 済み・PR はまだ無い）。main は infra c61496f・web 445a79d のまま。**AWS には何も作っていない**。
-- **独立レビューの対象（固定）**: web 445a79d..eb3d7ef、infra c61496f..ac02611。担当は順に 1 名ずつ（読取り専用。GitHub の第三者 Approve ではない）。
-  - A（認証・セキュリティ。Opus・High）: **完了**。高 0・中 0・低 6（A1 `/v1/agent/..;/` で Caddy の `/internal` 404 を迂回〔ingest のトークンで 401〕、A2 `X-Auth-Request-Redirect`・`X-Forwarded-Uri`・`Forwarded` を消していない〔契約の記述と不一致〕、A3 ownerEmail の検査が Pulumi と boot で違う〔boot が失敗し得る〕、A4 停止中の案内のページがリポジトリ名・手順を出す、A5 AllViewer と Authorization の記述が未確認、A6 web の試験の陽性の欠落・403 の理由の未確認）。
-  - B（AWS・運用・費用。Opus・High）: **完了**。中 1・低 9（B1 インスタンスの置換えで VpcOrigin がその場の更新になり使用中で失敗し得る・文書の「replace」が誤り・削除保護とデータの EBS の付け替え、B2 EC2 が IGW・経路表の関連付けを待たない、B3 VPC origin の待ちが 15 分、B4 Budgets はアクションなしなら無料〔$0.62 の計上が誤り〕、B5 flat-rate は Business〔$200〕以上なら VPC origin 可、B6 廃止したキーは拒否ではなく無視される、B7 初回の up の途中失敗で EC2 が動いたまま、B8 接続 3 秒・1 回は短い、B9 合言葉の不一致の 403 でエージェントが送信を止める、B10 確かめられないときに準備完了へ倒れる）。
-  - C（アプリ・契約・試験。Sonnet・High）: **使用量の上限で途中停止**。再開して完了させる。
-- **次に実行する手順**: ① C を再開（同じ SHA）→ ② A・B・C の照合（採用・不採用・保留と理由を DECISIONS に）→ ③ 修正（infra: Caddy のパスの検査・ヘッダの除去・ownerEmail の検査・案内の文言・VpcOrigin の置換え〔replaceOnChanges か手順〕・EC2 の dependsOn・customTimeouts・接続の待ち・SITE_URL 必須・文書と費用。web: 試験の強化・契約の記述）→ ④ 影響する検証の再実行 → ⑤ 修正の再レビュー（同じ担当の観点で 1 回）→ ⑥ PROGRESS に検証したコミットを記録 → ⑦ push・PR 作成（web・infra）→ ⑧ CI の確認（ci gate と各ジョブ）・失敗の修正 → ⑨ web はマージ条件を満たせばマージ、infra は IAM・CloudFront を含むため本人の確認の後。
+## 2026-11-17 中断・再開の記録（CloudFront の標準 URL の作業。**作業中**。秘密は含まない。最終更新 2026-11-17 16:50 UTC）
+- **ブランチ**: infra・web とも `claude/jra-bot-gcp-to-aws-uqla8y`（main は infra c61496f・web 445a79d のまま）。**AWS には何も作っていない**。
+- **完了**: 実装（infra 5a5269d・文書 ac02611、web eb3d7ef）→ 独立レビュー A・B・C（対象 web 445a79d..eb3d7ef・infra c61496f..ac02611）→ 照合（infra DECISIONS I-051・web D-289。高 0・中 3・低 19。採用・不採用と理由）→ 修正（infra 4b65f4d コード・75a1e33 文書、web は本節を含むコミット）。
+- **修正後の検証（ローカル）**: infra lint・ops 205・pulumi 30・pulumi-aws 18（skip 0）、Caddy の結合試験 29 項目（変異で 11 件が失敗することも確認）、バックアップ・復元の結合試験（復元の後の本人の行を含む）。web `DashboardAwsPersonAuthTest` 6・`CsrfGuardCloudFrontTest` 2・ktlint・TypeScript の lint/試験・consistency。
+- **残り**: ① 修正の再レビュー（修正の差分だけ。A・B・C の観点を 1 名で）→ 新たな高・中があれば修正 ② push・PR 作成（web・infra）③ CI（ci gate と各ジョブ）の確認・失敗の修正 ④ web はマージ条件を満たせばマージ、infra は IAM・CloudFront を含むため本人の確認の後 ⑤ 最終報告。
+- **次に実行する手順**: 再レビューの対象は infra ac02611..（最新）・web eb3d7ef..（最新）。PR の本文の下書きは作業者の一時領域にあるが、無くても CONTRACTS・DECISIONS・PROGRESS から作れる。
 
 ## 2026-11-17 独自ドメインなし: CloudFront の標準 URL + VPC origin（ブランチ claude/jra-bot-gcp-to-aws-uqla8y〔main c61496f から〕。I-050・web D-288・CONTRACTS 0.4.20。**AWS には何も作っていない・適用しない**）
 - **変更**: Route 53・Let's Encrypt・制御の DNS の更新・`@aws-sdk/client-route-53` を削除。CloudFront（標準のドメイン・既定の証明書・CachingDisabled + AllViewer・全メソッド・エラー TTL 0・502/504 → S3〔OAC〕の 503 の案内）+ VPC origin（EC2 の 80 番・SG は管理 SG からだけ）+ 合言葉 `X-Origin-Verify`（`@pulumi/random` 4.21.6 → SSM → Caddy）。Caddy は HTTP（`route` で順序を固定: 合言葉 403・Host 421・識別のヘッダの除去・`/internal` 404・`/_jrabot/health`・`/logout`）。Cognito の callback/logout は CloudFront の URL（distribution の後に作る）、ホストへは S3 `control/site.json`。制御は NORMAL の条件に CloudFront 経由の health を追加。ホストは本人の `tenant`・`app_user(ADMIN)` を `INSERT IGNORE`。サブネットは AZ の ID（az3 不可）。`appEnv` で infra の値を上書きさせない。
