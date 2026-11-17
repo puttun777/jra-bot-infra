@@ -1,23 +1,26 @@
-# AWS の運用手順（Runbook。2026-11-13）
+# AWS の運用手順（Runbook。2026-11-13・2026-11-17 改訂: 独自ドメインなし）
 
-構成は `AWS_ARCHITECTURE.md`、費用は `CLOUD_COSTS.md` §12。**ここに書いた AWS の操作は、まだ一度も実環境で実行していない**（試験は mock・合成データ・ローカルの Docker まで。§11）。
+構成は `AWS_ARCHITECTURE.md`、費用は `CLOUD_COSTS.md` §13。**ここに書いた AWS の操作は、まだ一度も実環境で実行していない**（試験は mock・合成データ・ローカルの Docker まで。§11）。
 操作はすべて GitHub の infra リポジトリの **Actions → 対象の workflow → Run workflow**（スマホのブラウザ・GitHub アプリからも可）。結果は実行の Summary に Markdown で出る。
 
-## 0. 本人が用意するもの（U1〜U12）
+**前提: AWS アカウントはあり、独自ドメインは持っていない**。ドメインの購入・DNS（Route 53 のゾーン・NS の委任）・証明書（ACM・Let's Encrypt）の準備は**不要**。公開 URL は CloudFront の標準の `https://<distribution>.cloudfront.net`（Pulumi が作り、出力 `site_url` に出る。I-050）。
+
+## 0. 本人が用意するもの（U1〜U13）
 | ID | 内容 | 方法・注意 |
 |---|---|---|
 | U1 | AWS アカウント（東京リージョンを使う）と、**ルートを使わない管理者**（IAM Identity Center の利用者 + MFA） | 長期のアクセスキーを作らない。Pulumi は `aws sso login` の短期の資格情報で実行する |
-| U2 | **独自ドメイン**（画面の HTTPS・Cognito の戻り先に必要）。例 `jrabot.example.com` | 既に持っているドメインのサブドメインでよい（購入は本人の判断）。Route 53 にホストゾーンを作る（`createZone=true`）か既存のゾーン ID を渡す。親のドメインの DNS に NS を委任する（`zone_name_servers` の出力） |
-| U3 | Pulumi の state の置き場: S3 バケット（例 `jrabot-pulumi-state-<アカウントID>`、バージョニング有効・公開ブロック）と、秘密の暗号化のパスフレーズ | `pulumi login s3://<バケット>?region=ap-northeast-1`、`PULUMI_CONFIG_PASSPHRASE` はパスワード管理に保存（Git に入れない） |
-| U4 | Amazon Linux 2023 の arm64 の AMI ID（東京） | `aws ssm get-parameter --name /aws/service/ami-amazon-linux-latest/al2023-ami-kernel-default-arm64 --region ap-northeast-1 --query Parameter.Value --output text`。**固定する**（変えるとインスタンスの作り直しになるので Pulumi は無視する） |
+| U2 | Pulumi の state の置き場: S3 バケット（例 `jrabot-pulumi-state-<アカウントID>`、バージョニング有効・公開ブロック）と、秘密の暗号化のパスフレーズ | `pulumi login s3://<バケット>?region=ap-northeast-1`、`PULUMI_CONFIG_PASSPHRASE` はパスワード管理に保存（Git に入れない。KMS の鍵の月額を避ける） |
+| U3 | Amazon Linux 2023 の arm64 の AMI ID（東京） | `aws ssm get-parameter --name /aws/service/ami-amazon-linux-latest/al2023-ami-kernel-default-arm64 --region ap-northeast-1 --query Parameter.Value --output text`。**固定する**（変えるとインスタンスの作り直しになるので Pulumi は無視する） |
+| U4 | アベイラビリティゾーンの **ID**（`apne1-az1`・`apne1-az2`・`apne1-az4` のどれか。既定 `apne1-az1`） | **`apne1-az3` は CloudFront の VPC origin が使えない**（設定の検査で拒否）。t4g.small があるか: `aws ec2 describe-instance-type-offerings --location-type availability-zone-id --filters Name=instance-type,Values=t4g.small --region ap-northeast-1 --query 'InstanceTypeOfferings[].Location'` |
 | U5 | サードパーティのイメージの digest | `docker buildx imagetools inspect quay.io/oauth2-proxy/oauth2-proxy:v7.15.3` の `Digest`（index）。mysql・caddy は `pulumi-aws` の試験と同じ値（`mysql:8.4.11@sha256:0f51e63e…`・`caddy:2.11.6@sha256:3422ce6d…`）を使える。**3 つとも `tag@sha256:` で固定**（形式は検査される） |
 | U6 | Discord の Webhook（通常・エラー） | **チャットに貼らない**。CloudShell で `aws ssm put-parameter --name /jra-bot/discord-webhook --type SecureString --value '<URL>'`（`discord-error-webhook` も）。制御（Lambda）の通知はエラー用の Webhook を使う |
-| U7 | アプリの運用値（`appEnv`）: `CALENDAR_*`・`BOT_RUN_*`（web CONTRACTS §2。**既定値は無い**） | GCP の Terraform の変数と同じ値。秘密は入れない（検査で拒否） |
+| U7 | アプリの運用値（`appEnv`）: `CALENDAR_*`・`BOT_RUN_*`（web CONTRACTS §2。**既定値は無い**） | GCP の Terraform の変数と同じ値。秘密は入れない（検査で拒否）。infra が決める値（`RUNTIME_PLATFORM`・`COGNITO_*`・`ALLOWED_USERS`・`ADMIN_USERS`・`OPS_MODE_SOURCE`）は入れられない |
 | U8 | GitHub の environment `ops`（infra）: main だけ・必要なら承認者に本人 | 変数（§1.4）を置く。秘密は置かない（OIDC なので不要） |
-| U9 | web の environment `release` の変数 `AWS_ACCOUNT_ID`・`AWS_PUSH_ROLE_ARN` | `enableWebPush=true` で Pulumi がロールを作った後（**IAM の変更なので本人の承認**） |
-| U10 | Windows エージェントの設定の変更（ビーコンの URL・検証鍵・送信先） | §1.6 |
-| U11 | Cognito の初回ログイン（仮パスワードはメールで届く → 本パスワード → TOTP の登録） | 認証アプリ（Google Authenticator 等）。復旧はメール |
-| U12 | 予算の通知の宛先（`budgetEmail`）と金額（`budgetUsd`。既定 $20） | **通知だけで、止まらない**。同じ宛先に制御の失敗のアラーム（SNS）のメールが届く: 最初に届く「購読の確認」のリンクを開く |
+| U9 | 予算の通知の宛先（`budgetEmail`）と金額（`budgetUsd`。既定 $20） | **通知だけで、止まらない**。同じ宛先に制御の失敗のアラーム（SNS）のメールが届く: 最初に届く「購読の確認」のリンクを開く |
+| U10 | web の environment `release` の変数 `AWS_ACCOUNT_ID`・`AWS_PUSH_ROLE_ARN` | `enableWebPush=true` で Pulumi がロールを作った後（**IAM の変更なので本人の承認**） |
+| U11 | Windows エージェントの設定の変更（ビーコンの URL・検証鍵・送信先 = `site_url`） | §1.7 |
+| U12 | Cognito の初回ログイン（仮パスワードはメールで届く → 本パスワード → TOTP の登録） | 認証アプリ（Google Authenticator 等）。復旧はメール。**自己登録はできない**（本人の 1 人だけを Pulumi が作る） |
+| U13 | Cognito のドメインの接頭辞（`cognitoDomainPrefix`。**世界で一意**の英小文字・数字・ハイフン）と、本人のメール（`ownerEmail`） | 接頭辞はログイン画面の URL `https://<接頭辞>.auth.ap-northeast-1.amazoncognito.com` になる（ドメインの購入ではない）。使われていればエラー → 別の名前 |
 
 ## 1. 初回の構築（本人の承認の後）
 1.1 **事前の確認（課金なし）**: infra の CI が緑、`npm ci --ignore-scripts && npm test`（mock・合成データ）が通ること。
@@ -25,34 +28,42 @@
 ```bash
 npm ci --ignore-scripts && npm run build && npm run bundle:aws
 cd pulumi-aws
-pulumi login 's3://<U3 のバケット>?region=ap-northeast-1'
+pulumi login 's3://<U2 のバケット>?region=ap-northeast-1'
 pulumi stack init prod --secrets-provider passphrase
 pulumi config set jrabot-aws:prefix jrabot-<アカウントIDの下4桁など>
 pulumi config set jrabot-aws:accountId <12 桁>
-pulumi config set jrabot-aws:amiId <U4>
-pulumi config set jrabot-aws:siteHost <U2 の FQDN>
-pulumi config set jrabot-aws:createZone true     # または dnsZoneId <既存のゾーン ID>
-pulumi config set jrabot-aws:zoneName <U2 のゾーン名>
-pulumi config set jrabot-aws:cognitoDomainPrefix <世界で一意の英小文字>
+pulumi config set jrabot-aws:amiId <U3>
+pulumi config set jrabot-aws:availabilityZoneId apne1-az1   # U4（az3 は不可）
+pulumi config set jrabot-aws:cognitoDomainPrefix <U13>
 pulumi config set jrabot-aws:ownerEmail <本人のメール>
 pulumi config set jrabot-aws:githubOwner <GitHub の所有者>
-pulumi config set jrabot-aws:budgetEmail <U12>
+pulumi config set jrabot-aws:budgetEmail <U9>
 pulumi config set jrabot-aws:hostImages '{"mysql":"mysql:8.4.11@sha256:…","caddy":"caddy:2.11.6@sha256:…","oauth2Proxy":"quay.io/oauth2-proxy/oauth2-proxy:v7.15.3@sha256:…"}'
 pulumi config set jrabot-aws:appEnv '{"CALENDAR_WATCH_START_MINUTES":"…", …, "BOT_RUN_DECISION_PROFILE":"…"}'
+# 既にアカウントに GitHub の OIDC プロバイダがあれば: pulumi config set jrabot-aws:githubOidcProviderArn arn:aws:iam::<12 桁>:oidc-provider/token.actions.githubusercontent.com
 ```
-1.3 **確認と適用**: `pulumi preview`（作るものの一覧。課金リソース: EC2・EBS 2 本・S3 4 本・ECR 5・Lambda・Scheduler・Cognito・Route 53 のゾーン・Budgets・DLM）→ 本人が内容を確認 → `pulumi up`。EC2 は作成と同時に起動するが、起動目的が無いので制御が数分で止める（『制御を通さない起動』の通知が出るのは正常。版も秘密もまだ無いのでアプリは動かない）。
+ドメイン・ゾーン・証明書の設定は無い（`siteHost`・`dnsZoneId` は廃止。設定すると検査で拒否）。
+
+1.3 **確認と適用**: `pulumi preview`（作るものの一覧。課金リソース: EC2・EBS 2 本・S3 5 本〔ops-state・beacon・models・backups・site〕・ECR 5・Lambda・Scheduler・Cognito・**CloudFront の distribution・VPC origin**・Budgets・DLM・CloudWatch のアラーム 2）→ 本人が内容を確認 → `pulumi up`。
+- **作成の順序（自動）**: VPC・サブネット → EC2（作成と同時に起動する）→ **VPC origin**（EC2 が running である必要がある。作成に最大 15 分）→ CloudFront の管理 SG（`CloudFront-VPCOrigins-Service-SG…`）を探して EC2 の SG に 80 番の受信を追加 → **distribution**（配布の完了を待つ。数分〜15 分）→ Cognito の App client（callback = `<site_url>/oauth2/callback`）→ S3 `control/site.json` → Lambda（`SITE_URL`）→ **最後に Scheduler**。Scheduler が最後なので、作成の途中で制御が EC2 を止めない。
+- `pulumi up` が VPC origin の作成で「インスタンスが Active でない」と失敗したら: EC2 が running か確かめ（コンソール）、もう一度 `pulumi up`。
+- 作成の後、Scheduler の最初の実行で制御が「起動目的が無い」EC2 を止める（『制御を通さない起動』の通知が出るのは正常。版も秘密もまだ無いのでアプリは動かない）。
+- 出力の `site_url`（`https://d….cloudfront.net`）が公開 URL。**ブックマーク・Windows エージェントの送信先に使う**。distribution を作り直さない限り変わらない。
+
 1.4 **GitHub の変数**（infra の environment `ops`。値は `pulumi stack output`）:
 `AWS_OPS_ROLE_ARN`=ops_role_arn、`AWS_CONTROLLER_FUNCTION`=controller_function、`AWS_INSTANCE_ID`=instance_id、`AWS_HOST_COMMAND_DOCUMENT`=host_command_document、`AWS_STATE_BUCKET`=state_bucket、`AWS_SSM_PREFIX`=`/jra-bot`、`AWS_HOST_IMAGES`=host_images（JSON のまま）、`AWS_ARCH`=arch。
-1.5 **秘密の作成**: Actions → `aws-secrets-init`（DB のパスワード・Cookie・ペッパー・KEK・ビーコンとモデルの署名鍵を SSM に作る。**既にあるものは上書きしない**）。続けて U6 の Discord。
+1.5 **秘密の作成**: Actions → `aws-secrets-init`（DB のパスワード・Cookie・ペッパー・KEK・ビーコンとモデルの署名鍵を SSM に作る。**既にあるものは上書きしない**）。続けて U6 の Discord。CloudFront → EC2 の合言葉（`/jra-bot/origin-verify`）は Pulumi が作る（ここでは作らない）。
 1.6 **イメージ**: web で `enableWebPush=true`（`pulumi config set jrabot-aws:enableWebPush true` → `pulumi up`）→ web の release（target=aws・arch=arm64）→ リリースの `release-manifest.json` の URL と SHA-256 で §6 の `aws-deploy`。
-1.7 **Windows エージェント**（U10）: `aws-status` の「ビーコンの検証鍵」（kid と公開鍵）、`beacon_url`（出力）、送信先 `https://<siteHost>`（`/v1/agent/*`）をエージェントの設定に入れる。エージェントのトークンの登録は dashboard の管理画面（web CONTRACTS §8）。
-1.8 **初回ログイン**: `aws-view` → 表示された URL → Cognito（U11）。
+1.7 **Windows エージェント**（U11）: `aws-status` の「ビーコンの検証鍵」（kid と公開鍵）、`beacon_url`（出力）、送信先 `server.base_url = <site_url>`（`/v1/agent/*` は ingest へ。Cognito を通らない）をエージェントの設定に入れる。エージェントのトークンの登録は dashboard の管理画面（web CONTRACTS §3.3）。
+1.8 **初回ログイン**: `aws-view` → 表示された URL（= `site_url`）→ Cognito（U12）→ 画面。本人の利用者の行（`app_user` の ADMIN）はホストが boot で作る（無ければ 403 になる。§9）。
+1.9 **初回の確認（実環境でしかできない。結果を PROGRESS に記録）**: §11 の V-1〜V-5（VPC origin の到達・作成の順序・停止/起動の後の復帰・管理 SG の名前・Cognito のログイン/ログアウト）と、直接の接続の拒否（EC2 の公開 IPv4 の 80 番に届かない・合言葉なしは 403）。
 
 ## 2. 閲覧（スマホ可）
 1. Actions → **aws-view** → minutes（既定 60）・wait（既定オン）→ Run。
-2. 数分後に Summary に「利用可能: はい」と URL が出る（**受付と準備完了を区別**: 受付直後は「接続先: 準備完了まで表示しない」）。起動に 20 分を超えると Discord に通知。
+2. 数分後に Summary に「利用可能: はい」と URL が出る（**受付と準備完了を区別**: 受付直後は「接続先: 準備完了まで表示しない」。準備完了は、ホストの READY に加えて **CloudFront 経由で `/_jrabot/health` が届いたこと**）。起動に 20 分を超えると Discord に通知（CloudFront 経由の確認の結果も書く）。
 3. **延長**: もう一度 aws-view を実行（期限は「今から N 分」。短くならない）。
-4. **終了**: aws-stop（scope=view-end）。期限が来れば自動で止まる。
+4. **終了**: aws-stop（scope=view-end）または画面の `/logout`（ログアウトだけ。EC2 は止まらない）。期限が来れば自動で止まる。
+- URL をブラウザで開いただけでは起動しない。止まっている・起動中は「jra-bot は停止中です」の案内（HTTP 503。キャッシュしないので、起動の後に開き直せば画面になる）。
 - 閲覧だけの起動では **bot・Discord の通知・ingest・重い処理は動かない**（`workloads.raceday=false`。アプリ側でも拒否）。開催日の時間帯なら開催日の起動目的で既に動いている（閲覧の終了で止まらない）。
 
 ## 3. 開催日（自動）
@@ -67,9 +78,10 @@ pulumi config set jrabot-aws:appEnv '{"CALENDAR_WATCH_START_MINUTES":"…", …,
 - 停止は制御が行う（受付の停止 → 実行中の処理の終了 → バックアップ → MySQL の正常終了 → 電源断 → STOPPED）。**データは消さない**。status の「最後の停止」に clean・backup_ok・forced が出る。clean=false・backup_ok=false は Discord に通知。
 - 止まらないとき: 25 分で StopInstances、さらに 10 分で強制停止（自動）。それでも running のまま → AWS コンソールの EC2 で状態を確認し、「インスタンスを停止」（強制停止は最後の手段。MySQL はクラッシュ回復で戻るが、直後に status でバックアップを確認）。
 - **停止し忘れの検知**: 制御の上限（20 時間）・Discord の通知・Budgets の通知（遅れる）。月に一度は AWS の請求のページで EC2 の時間を確認する。
+- 停止・起動で公開 URL は変わらない（CloudFront の distribution と VPC origin はそのまま。EC2 の IP は変わるが使っていない）。
 
 ## 4b. 保守のための起動
-Actions → **aws-maintenance**（minutes 180/120・理由）。閲覧と同じく bot・通知・重い処理は動かさない。期限で自動で止まる（もう一度実行すると延長。途中で止めるなら aws-stop の stop-all）。復元（§8）に使う。
+Actions → **aws-maintenance**（minutes 180/120・理由）。閲覧と同じく bot・通知・重い処理は動かさない。期限で自動で止まる（もう一度実行すると延長。途中で止めるなら aws-stop の stop-all）。復元（§8）と、VPC origin の作り直し（§9）に使う。
 
 ## 5. 重い処理（バックテスト・データセット・学習）
 Actions → **aws-batch**（task・args・minutes・reason）。開催日の処理中は拒否される。終わると起動目的を外す（他が無ければ停止）。引数は許可したものだけ（例 `--from=2026-01-01 --to=2026-06-30`）。
@@ -86,7 +98,7 @@ Actions → **aws-batch**（task・args・minutes・reason）。開催日の処�
 1. AWS を合成データで構築・確認（§1〜§6、§8 の復元の練習）。この間、**AWS の開催日の起動は止めておく**: 計画が来ないように `aws-raceday skip` を当日分に入れるか、エージェントの送信先を GCP のままにする（ビーコンは別の URL なのでエージェントは AWS に送らない）。
 2. 切替日（開催日でない日）: GCP の `ops-stop`（mode=STOPPED・Scheduler 停止・bot の Job を起動しない）→ `ops-status` で STOPPED を確認。
 3. データの移行（本人の判断・COMP-4 の後）: GCP の Cloud SQL から mysqldump（`--single-transaction`）→ AWS の EC2 で `jrabot-host restore` と同じ手順で投入（S3 の `mysql/` に置いて `restore --key … --confirm RESTORE-<日付>`）→ `db-migration validate`。
-4. Windows エージェントの設定を AWS（ビーコンの URL・検証鍵・送信先）に変える（§1.7）。
+4. Windows エージェントの設定を AWS（ビーコンの URL・検証鍵・送信先 `site_url`）に変える（§1.7）。
 5. AWS の開催日の起動を有効にする（skip を外す: `aws-raceday add`）。最初の開催日は aws-status と Discord で確認。
 6. **GCP は消さない**（Cloud SQL を停止・Scheduler を停止のまま。費用は CLOUD_COSTS §10.3）。AWS で 2〜4 開催日を問題なく終えてから、GCP の削除を本人が判断する（`terraform destroy` 等は本人）。
 - **切戻し**: AWS の `aws-stop`（stop-all）→ 制御の Scheduler を止める（`aws scheduler update-schedule … --state DISABLED` を CloudShell で。または Pulumi で。止めると『定期実行が来ない』のアラームのメールが届く）→ AWS の最新のバックアップを GCP に戻すか（AWS で増えたデータを持ち帰る）、GCP の停止時点から再開 → エージェントの設定を GCP に戻す → GCP の `ops-start`。
@@ -100,9 +112,15 @@ Actions → **aws-batch**（task・args・minutes・reason）。開催日の処�
 ## 9. 困ったとき
 | 症状 | 確認 | 対処 |
 |---|---|---|
-| aws-view が「利用可能: いいえ」のまま | status の host.phase・ready | BOOTING のまま → Session Manager で `journalctl -u jrabot-boot -n 50`。「未適用のマイグレーション」→ aws-deploy。「control/release.json を読めない」→ 初回の deploy がまだ |
-| 画面が開けない（証明書・名前） | status の url、`dig <siteHost>` | IP の更新は起動のたびに Lambda が行う（TTL 60 秒。1 時間ごとに書き直す）。証明書は初回の取得に数分 |
+| aws-view が「利用可能: いいえ」のまま | status の host.phase・ready、Discord の起動の時間切れの通知（「CloudFront 経由=届かない」か） | BOOTING のまま → Session Manager で `journalctl -u jrabot-boot -n 50`。「未適用のマイグレーション」→ aws-deploy。「control/release.json を読めない」→ 初回の deploy がまだ。「site.json を読めない」→ `pulumi up` がまだ・途中。CloudFront 経由が届かない → 下の 503 の行 |
+| 画面が「jra-bot は停止中です」（503）のまま | aws-status の mode・EC2、`aws cloudfront get-vpc-origin --id <vpc_origin_id>` の Status | 停止中なら aws-view。NORMAL なのに 503 → VPC origin が `Deployed` か、EC2 の SG に管理 SG からの 80 番の受信があるか（`pulumi refresh` → `pulumi up`）、Caddy・oauth2-proxy のコンテナ（`docker ps`）。起動の直後は数十秒かかる（エラーはキャッシュしないので開き直す） |
+| 素の 403（接続が閉じる） | Caddy の合言葉の不一致 | 合言葉を入れ替えた直後（下）なら、止めて起動し直す（aws-stop の stop-all → STOPPED を確認 → aws-view。起動のたびに boot が SSM を読み直し、コンテナを作り直す。動いているコンテナは boot をやり直すだけでは作り直されない） |
+| 421 | Host が公開 URL と違う（distribution を作り直した後など） | `pulumi up` で `control/site.json` を更新 → 止めて起動し直す（boot が site.json を読み直す） |
+| ログインが繰り返す・callback のエラー | Cognito の App client の callback が `site_url` + `/oauth2/callback` か（`pulumi stack output site_url`） | `pulumi up`（distribution の後に Cognito を更新する）。ブラウザの Cookie（`__Host-jrabot`）を消して開き直す |
+| ログインできたが 403 | 本人のメールか（`ownerEmail` と Cognito の利用者のメールの一致・大文字小文字）、`app_user` の行 | ホストの boot が `INSERT IGNORE` で作る。復元の後なら復元した DB の `app_user` を確認（既存の行は変えない） |
 | Cognito でログインできない | 本人のメールか・MFA | 管理者がコンソールでパスワードの再設定 |
+| 公開 URL が変わった | distribution を作り直した（Pulumi の差分で `replace`） | 新しい `site_url` をブックマーク・Windows エージェントの `server.base_url` に。Cognito の callback は Pulumi が更新する |
+| VPC origin・distribution の作り直しが必要（EC2 の置換え等） | `pulumi preview` に VPC origin の replace | **EC2 を起動してから**（aws-maintenance）`pulumi up`（VPC origin の作成には running の EC2 が要る） |
 | 停止が clean=false | Discord・status の last_stop | 次の起動後に aws-backup で取り直す |
 | 「停止し忘れ」 | status の holds・auto_stop_at | aws-stop（stop-all）。制御が動かない場合もホストが 30 時間で自分で止まる |
 | アラームのメール（制御のエラー・定期実行が来ない） | CloudWatch のロググループ `/aws/lambda/<prefix>-controller` | 原因（権限・状態の破損）を直す。止まらない EC2 はコンソールで停止 |
@@ -110,10 +128,12 @@ Actions → **aws-batch**（task・args・minutes・reason）。開催日の処�
 | ネットワークの範囲の違い（boot の失敗） | `docker network inspect jrabot` | 全コンテナを止めて `docker network rm jrabot` → `systemctl restart jrabot-boot` |
 | モデルの鍵の入替え | — | 新しい署名鍵を SSM に置く（旧い鍵で署名したモデルは再学習・再署名）。複数の検証鍵の併用は未対応（必要になったら web の CONTRACTS §5.1 に合わせて追加） |
 
+**合言葉（`X-Origin-Verify`）の入替え**（漏れた疑いがあるとき。**EC2 を止めた状態で**）: `pulumi stack --show-urns | grep origin-verify` で RandomPassword の URN を確かめ、`pulumi up --replace '<URN>'`（SSM の値と distribution のヘッダが同時に変わる。配布の完了を待つ）→ 次の起動の boot で Caddy が新しい値を読む。動いている間に行うと、boot をやり直すまで 403 になる。
+
 ## 10. 費用の確認と、残りやすい有料リソース
-- 停止中も課金されるもの: EBS（ルート 12 GB + データ 16 GB）・スナップショット・S3・ECR・Route 53 のゾーン・（ごく少額）Lambda・Scheduler。**EC2 と公開 IPv4 は停止中は課金されない**（Elastic IP を作らない）。
-- 片付けるときに残りやすいもの: データ用 EBS（`retainOnDelete`）・Cognito（削除保護）・S3（中身があると消えない）・スナップショット・ECR のイメージ・CloudWatch のロググループ・Route 53 のゾーン。削除は本人の判断（実データの削除）。
+- 停止中も課金されるもの: EBS（ルート 12 GB + データ 16 GB）・スナップショット・S3・ECR・（ごく少額）Lambda・Scheduler・CloudWatch のアラーム。**EC2 と公開 IPv4 は停止中は課金されない**（Elastic IP を作らない）。CloudFront は従量（停止中は案内のページの要求だけ。ほぼ $0）。**Route 53・ドメインの費用は無い**。
+- 片付けるときに残りやすいもの: データ用 EBS（`retainOnDelete`）・Cognito（削除保護）・S3（中身があると消えない）・スナップショット・ECR のイメージ・CloudWatch のロググループ・CloudFront の distribution（無効にしてから削除。数分かかる）・VPC origin。削除は本人の判断（実データの削除）。
 - Budgets は**通知だけ**（止まらない）。
 
 ## 11. 未実施（実環境が必要）
-`pulumi preview/up`、Lambda の実行、EC2 の起動と user data、Cognito のログイン、Let's Encrypt の取得、Route 53 の更新、SSM Run Command、ECR への push・pull、arm64 の実機での JVM の起動とメモリ、S3 の条件付き書込みの実挙動（偽の S3 で試験）、Windows エージェントとの接続、GCP からの実データの移行。初回の構築のときに §1 の順で確かめ、結果を PROGRESS に記録する。
+`pulumi preview/up`、Lambda の実行、EC2 の起動と user data、**CloudFront の distribution・VPC origin の作成と到達（V-1: IGW へ経路のあるサブネットでの VPC origin。AWS の文書の前提はプライベートサブネット）・作成の順序（V-2）・停止/起動の後の 503 の案内と復帰（V-3）・管理 SG の名前の検索（V-4）・Cognito のログイン/ログアウト/MFA の往復（V-5）・EC2 への直接の接続の拒否**、SSM Run Command、ECR への push・pull、arm64 の実機での JVM の起動とメモリ、S3 の条件付き書込みの実挙動（偽の S3 で試験）、Windows エージェントとの接続（CloudFront 経由の HMAC の署名・gzip の本文）、GCP からの実データの移行。初回の構築のときに §1 の順で確かめ、結果を PROGRESS に記録する。V-1 が通らないときの代替と費用は `AWS_ARCHITECTURE.md` §10。
