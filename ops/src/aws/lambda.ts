@@ -43,8 +43,8 @@ export interface ControllerPorts {
   start(): Promise<void>;
   stop(force: boolean): Promise<void>;
   writeBeacon(mode: Mode, seq: number, now: string): Promise<void>;
-  /** 公開 URL（CloudFront）経由の準備完了の確認（SITE_URL が無ければ undefined を返す）。 */
-  probeSite(): Promise<boolean | undefined>;
+  /** 公開 URL（CloudFront）経由の準備完了の確認。 */
+  probeSite(): Promise<boolean>;
   notify(title: string, body: string): Promise<void>;
 }
 
@@ -172,7 +172,8 @@ const EnvSchema = z.object({
   INSTANCE_ID: z.string().regex(/^i-[0-9a-f]{8,17}$/),
   BEACON_KID: z.string().regex(/^[A-Za-z0-9._-]{1,40}$/),
   BEACON_KEY_PARAM: z.string().startsWith("/"),
-  SITE_URL: z.string().url().optional(),
+  // 公開 URL（CloudFront）。必須: 無いと準備完了を確かめられない（レビュー B10）
+  SITE_URL: z.string().regex(/^https:\/\/d[a-z0-9]{6,32}\.cloudfront\.net$/),
   NOTIFY_WEBHOOK_PARAM: z.string().startsWith("/").optional(),
   CONTROLLER_CONFIG: z.string().optional(),
 });
@@ -211,7 +212,7 @@ export async function handler(event: unknown): Promise<ControllerResult> {
       }
       await beacon.put("beacon/mode.json", makeBeacon(beaconKey, env.BEACON_KID, mode, seq, now), "application/json", "no-store");
     },
-    probeSite: async () => (env.SITE_URL === undefined ? undefined : probeSite(env.SITE_URL)),
+    probeSite: async () => probeSite(env.SITE_URL),
     notify: async (title, body) => {
       const hook = env.NOTIFY_WEBHOOK_PARAM === undefined ? undefined : await secureParameter(ssm, env.NOTIFY_WEBHOOK_PARAM);
       await notifyDiscord(hook, title, body);

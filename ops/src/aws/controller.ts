@@ -42,6 +42,8 @@ export class RequestRejected extends Error {
 }
 
 const MIN = 60_000;
+/** 制御が生きている印（aws.last_alive_at）を書く間隔。ホストは 3 時間書かれなければ制御が止まっていると判断する。 */
+const ALIVE_MINUTES = 60;
 /** 手動の開催日・飛ばす日の上限（状態の検査の上限と同じ。超える要求は拒否して、状態を読めなくしない）。 */
 const MAX_MANUAL_RACEDAYS = 30;
 const MAX_SKIP_DATES = 60;
@@ -397,8 +399,8 @@ export function reconcile(
         host.ready.mysql &&
         host.ready.dashboard &&
         host.seen_seq >= input.seq &&
-        // CloudFront 経由で届くこと（公開 URL の /_jrabot/health。確かめていない = undefined は妨げない: SITE_URL の無い試験・手元）
-        edgeReady !== false
+        // CloudFront 経由で届くこと（公開 URL の /_jrabot/health）。確かめられなかった（undefined）も準備完了にしない（レビュー B10）
+        edgeReady === true
       ) {
         s = S.setMode(s, "NORMAL", "NORMAL", "controller", "ホストの準備完了", nowIso) as AwsOpsState;
         s.aws.running_since = s.aws.running_since ?? nowIso;
@@ -490,6 +492,8 @@ export function reconcile(
   s.workloads = s.mode === "NORMAL" || s.mode === "STARTING" ? workloads : { raceday: false, batch: false };
   const beacon = beaconMode(s, host, now, cfg);
   // 公開 URL は CloudFront の標準のドメイン（VPC origin はインスタンスの private の名前に届く。停止・起動で IP が変わっても DNS の更新は要らない: I-050）
+  // 制御が生きている印: 動いている間は 1 時間ごとに書く（状態が変わらなくても運用状態が書かれる。ホストの「制御が止まっている」判定に使う。レビュー C3）
+  if (running && (s.aws.last_alive_at === null || now - ms(s.aws.last_alive_at) >= ALIVE_MINUTES * MIN)) s.aws.last_alive_at = nowIso;
   // 開催の計画が無い・古い（動いている間だけ更新される）: 開催日に自動で起動できないので知らせる（1 日 1 回）
   if (plan === undefined || now - ms(plan.generated_at) > PLAN_STALE_DAYS * 24 * 60 * MIN)
     alertOnce(

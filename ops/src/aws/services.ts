@@ -170,6 +170,8 @@ export function services(
         "--http-address=0.0.0.0:4180",
         "--upstream=http://jrabot-dashboard:8080/",
         "--reverse-proxy=true",
+        // Host を変えずに dashboard へ渡す（CSRF の Origin == Host の検査が公開 URL で成り立つ。既定に頼らず明示: レビュー C4）
+        "--pass-host-header=true",
         "--pass-authorization-header=true",
         "--skip-provider-button=true",
         "--scope=openid email",

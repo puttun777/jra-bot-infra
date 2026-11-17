@@ -62,6 +62,8 @@ export const AwsSectionSchema = z.looseObject({
     .looseObject({ at: ts, clean: z.boolean(), backup_ok: z.boolean().nullable(), forced: z.boolean(), reason: shortText })
     .nullable()
     .default(null),
+  /** 制御が生きている印（EC2 が動いている間 1 時間ごとに書く。ホストが「制御が止まっている」と判断する根拠）。 */
+  last_alive_at: ts.nullable().default(null),
   /** 一度だけ通知した警告（同じ警告を毎回送らない）。 */
   alerted: z.array(z.string().max(120)).max(20).default([]),
 });

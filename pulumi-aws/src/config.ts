@@ -40,6 +40,15 @@ const INFRA_OWNED_APP_KEYS = [
 const FORBIDDEN_APP_KEYS = /PASSWORD|SECRET|TOKEN|KEY|WEBHOOK|PEPPER|KEK/;
 
 const email = z.string().regex(/^[^@\s]+@[^@\s]+\.[^@\s]+$/, "メールアドレスの形式");
+/**
+ * 本人のメール。ホストが本人の利用者の行を作るときの検査（ops/src/aws/host.ts の ownerSeedSql）と同じ形だけを受け付ける
+ * （ここで通って boot で毎回失敗する、を防ぐ。小文字で書く: アプリ・oauth2-proxy の比較と行の作成が一致する。レビュー A3）。
+ */
+const ownerEmail = z
+  .string()
+  .regex(/^[a-z0-9._%+-]{1,64}@[a-z0-9.-]{1,189}\.[a-z]{2,63}$/, "本人のメールは小文字の英数字と ._%+- だけ（例 owner@example.com）");
+/** 廃止した設定（独自ドメイン・Route 53・AZ の名前。I-050）。スタックに残っていたら、黙って無視せずに止める（レビュー B6）。 */
+export const OBSOLETE_KEYS = ["siteHost", "dnsZoneId", "createZone", "zoneName", "availabilityZone"] as const;
 
 const AwsInfraBase = z
   .object({
@@ -69,7 +78,7 @@ const AwsInfraBase = z
     /** Cognito の hosted UI のドメインの接頭辞（<prefix>.auth.ap-northeast-1.amazoncognito.com。無料）。 */
     cognitoDomainPrefix: z.string().regex(/^[a-z0-9](?:[a-z0-9-]{1,61}[a-z0-9])$/),
     /** 本人のメール（Cognito の利用者・oauth2-proxy の許可・アプリの ALLOWED_USERS）。1 名だけ（web REQUIREMENTS §0）。 */
-    ownerEmail: email,
+    ownerEmail,
     /** GitHub の所有者（OIDC の信頼の条件）。 */
     githubOwner: z.string().regex(/^[A-Za-z0-9-]{1,39}$/),
     /** 既存の GitHub の OIDC プロバイダ（アカウントに 1 つだけ。無ければ作る）。 */
@@ -134,6 +143,11 @@ export function readConfig(get: (k: string) => string | undefined): AwsInfraConf
     "backupRetentionDays",
     "budgetUsd",
   ]);
+  const obsolete = OBSOLETE_KEYS.filter((k) => get(k) !== undefined);
+  if (obsolete.length > 0)
+    throw new Error(
+      `廃止した設定が残っている: ${obsolete.join(", ")}（独自ドメインは使わない。availabilityZone は availabilityZoneId に。pulumi config rm で消す）`,
+    );
   for (const k of Object.keys(AwsInfraBase.shape)) {
     const v = get(k);
     if (v === undefined) continue;

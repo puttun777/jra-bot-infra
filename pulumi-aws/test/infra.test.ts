@@ -1,10 +1,11 @@
 // Pulumi（AWS）の定義の mock 試験（AWS の認証なし。資源は作らない）。**mock の成功は実 AWS の preview・up の成功ではない**。
 // 確かめること: 固定費の大きい資源を作らない・公開してよいものだけを公開・データを消さない保護・最小権限・停止中も課金されにくい構成・設定の検査。
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
 import { before, describe, it } from "node:test";
 import * as aws from "@pulumi/aws";
 import * as pulumi from "@pulumi/pulumi";
-import { type AwsInfraConfig, REQUIRED_APP_KEYS, renderAppEnv, AwsInfraConfig as Schema } from "../src/config.js";
+import { type AwsInfraConfig, REQUIRED_APP_KEYS, readConfig, renderAppEnv, AwsInfraConfig as Schema } from "../src/config.js";
 import {
   CACHE_POLICY_CACHING_DISABLED,
   defineAwsInfra,
@@ -152,7 +153,8 @@ describe("AWS の資源（mock）", () => {
     assert.equal((host["vpcOriginConfig"] as Record<string, unknown>)["vpcOriginId"], "vo_mock");
     assert.equal(host["domainName"], "ip-10-80-1-10.ap-northeast-1.compute.internal");
     assert.deepEqual(host["customHeaders"], [{ name: ORIGIN_VERIFY_HEADER, value: "S".repeat(48) }]);
-    assert.equal(host["connectionAttempts"], 1);
+    assert.equal(host["connectionAttempts"], 2, "起動直後の遅い接続で「停止中」にしない（レビュー B8）");
+    assert.equal(host["connectionTimeout"], 5);
     const vo = of("aws:cloudfront/vpcOrigin:VpcOrigin")[0]?.inputs["vpcOriginEndpointConfig"] as Record<string, unknown>;
     assert.equal(vo["arn"], "arn:aws:mock:::jrabot-host");
     assert.equal(vo["originProtocolPolicy"], "http-only");
@@ -192,6 +194,9 @@ describe("AWS の資源（mock）", () => {
     assert.deepEqual(s?.Principal, { Service: "cloudfront.amazonaws.com" });
     assert.deepEqual(s?.Condition, { StringEquals: { "AWS:SourceArn": "arn:aws:mock:::jrabot-cdn" } });
     assert.equal(of("aws:cloudfront/originAccessControl:OriginAccessControl")[0]?.inputs["signingBehavior"], "always");
+    // 認証なしで誰にでも見えるページなので、リポジトリ名・workflow の名前・手順を出さない（レビュー A4）
+    const page = readFileSync(new URL("../../../pulumi-aws/host/offline.html", import.meta.url), "utf8");
+    assert.ok(!/jra-bot-infra|aws-view|github|actions/i.test(page), "停止中のページに運用の手がかりを書かない");
   });
 
   it("Cognito の戻り先・ログアウトの先は CloudFront の URL。ホストへは control/site.json（循環しない: user data に入れない）", async () => {
@@ -339,6 +344,18 @@ describe("設定と user data", () => {
     assert.equal(Schema.safeParse({ ...base, appEnv: { ...base.appEnv, DB_PASSWORD: "x" } }).success, false);
     assert.equal(Schema.safeParse({ ...base, siteHost: "jrabot.example.com" }).success, false, "独自ドメインの設定は無い（strict）");
     assert.equal(Schema.safeParse({ ...base, dnsZoneId: "Z0123456789ABC" }).success, false, "Route 53 の設定は無い（strict）");
+    // スタックの設定（Pulumi の Config）に古いキーが残っていたら、読むときに止める（黙って無視しない）
+    const cfgOf = (extra: Record<string, string>) => (k: string) => {
+      const all: Record<string, unknown> = { ...base, ...extra };
+      const v = all[k];
+      return v === undefined ? undefined : typeof v === "string" ? v : JSON.stringify(v);
+    };
+    assert.equal(readConfig(cfgOf({})).ownerEmail, base.ownerEmail, "今の設定は読める");
+    for (const k of ["siteHost", "dnsZoneId", "createZone", "zoneName", "availabilityZone"])
+      assert.throws(() => readConfig(cfgOf({ [k]: "x" })), /廃止した設定/, k);
+    // 本人のメール: ホストの行の作成と同じ形だけ（大文字・アポストロフィ等は構築の前に拒否）
+    for (const bad of ["Owner@Example.com", "o'neil@example.com", "owner@example"])
+      assert.equal(Schema.safeParse({ ...base, ownerEmail: bad }).success, false, bad);
     for (const k of ["COGNITO_CLIENT_ID", "ALLOWED_USERS", "RUNTIME_PLATFORM"])
       assert.equal(Schema.safeParse({ ...base, appEnv: { ...base.appEnv, [k]: "x" } }).success, false, k);
     assert.equal(Schema.safeParse({ ...base, hostImages: { ...base.hostImages, mysql: "mysql:8.4" } }).success, false, "digest で固定");

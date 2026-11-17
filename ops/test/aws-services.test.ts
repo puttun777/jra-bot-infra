@@ -88,6 +88,7 @@ describe("コンテナの定義", () => {
     assert.ok(c.includes(`--redirect-url=https://${s.siteHost}/oauth2/callback`), "戻り先は CloudFront の公開 URL");
     assert.ok(c.includes("--cookie-secure=true"));
     assert.ok(c.includes(`--whitelist-domain=${s.cognitoDomain}`), "ログアウトの後に Cognito へ移れる（他の外部へは移さない）");
+    assert.ok(c.includes("--pass-host-header=true"), "Host を変えずに dashboard へ（CSRF の Origin == Host）");
     assert.ok(!c.some((x) => x.startsWith("--skip-jwt-bearer-tokens")), "クライアントの Bearer でログインを飛ばさない");
   });
 

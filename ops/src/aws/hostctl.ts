@@ -285,7 +285,7 @@ function spoolEntries(): HostFacts["spool"] {
 }
 
 /**
- * 制御（Lambda）が止まっているように見えるか: 運用状態が 3 時間以上書かれていない（動いている間は DNS の書直しで 1 時間ごとに書かれる）か読めない。
+ * 制御（Lambda）が止まっているように見えるか: 運用状態が 3 時間以上書かれていない（動いている間は制御が `aws.last_alive_at` を 1 時間ごとに書く）か読めない。
  * 制御が動いているなら、停止は制御に任せる（開催日の途中に自分で止まらない）。
  */
 async function controllerLooksDead(cfg: HostConfig): Promise<boolean> {
@@ -523,7 +523,9 @@ async function restore(cfg: HostConfig, key: string, confirm: string): Promise<v
     );
   }
   rmSync(file, { force: true });
-  console.log(`restore: ${key} を戻した（アプリは次の tick で起動する）`);
+  // 戻した DB に本人の行が無い（他の環境・古い dump）と、ログインできても 403 になる。boot を待たずに作る（既存の行は変えない。レビュー C1）
+  ensureOwner(cfg);
+  console.log(`restore: ${key} を戻した（本人の利用者の行を確認した。アプリは次の tick で起動する）`);
 }
 
 async function report(cfg: HostConfig, status: Partial<HostStatus>): Promise<void> {

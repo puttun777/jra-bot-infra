@@ -2,7 +2,10 @@
 # 多層の防御（EC2 の SG で CloudFront の VPC origin の管理 SG からだけ受けたうえで）:
 # - CloudFront が付ける合言葉（X-Origin-Verify）が無い・違う要求は 403（直接の接続・別の経路を拒否）。合言葉は上流へ渡さない。
 # - Host は公開 URL（d*.cloudfront.net）だけ。違えば 421。
+# - パスが紛らわしい要求（`;`・`\`・`/./`・`/../`・`%2e`・`%2f`・`%5c`・`%3b`・`%25`・`%00`）は 400。Caddy の経路の一致は整えた後のパスで行い、上流へは
+#   元のパスを渡すため、`/v1/agent/..;/internal/…` のような要求で /internal の遮断を迂回させない（レビュー A1。クエリは対象外）。
 # - クライアントが付けられる利用者・認証の識別のヘッダは捨てる（アプリは Authorization の ID トークンの署名を検証する。oauth2-proxy が付け直す）。
+#   X-Forwarded-*・X-Auth-Request-*・Forwarded・X-Real-Ip も捨てる（oauth2-proxy の --reverse-proxy が戻り先・IP に使うため。レビュー A2）。
 # - 上流には「HTTPS で受けた」と伝える（X-Forwarded-Proto: https。Cookie の Secure・戻り先の URL・CSRF の Origin の検査が公開 URL と一致する）。
 # 経路（route の中は書いた順に評価する。Caddy の既定の順序では respond が handle より後になるため route を使う）:
 # - /internal は外へ出さない（404）。/_jrabot/health は CloudFront 経由の準備完了の確認（中身は ok だけ）。
@@ -32,16 +35,14 @@
 		}
 		@wronghost not host {$SITE_HOST}
 		respond @wronghost 421
+		@badpath vars_regexp {http.request.uri} (?i)^[^?]*(;|\\|%2e|%2f|%5c|%3b|%25|%00|/\.\.?(/|$))
+		respond @badpath 400
 
 		request_header -X-Origin-Verify
-		request_header -X-Forwarded-User
-		request_header -X-Forwarded-Email
-		request_header -X-Forwarded-Preferred-Username
-		request_header -X-Forwarded-Groups
-		request_header -X-Forwarded-Access-Token
-		request_header -X-Auth-Request-User
-		request_header -X-Auth-Request-Email
-		request_header -X-Auth-Request-Access-Token
+		request_header -X-Forwarded-*
+		request_header -X-Auth-Request-*
+		request_header -Forwarded
+		request_header -X-Real-Ip
 		request_header -X-Goog-Iap-Jwt-Assertion
 		request_header -X-Goog-Authenticated-User-Email
 		request_header -X-Goog-Authenticated-User-Id

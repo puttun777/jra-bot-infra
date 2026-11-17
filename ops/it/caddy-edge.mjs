@@ -49,7 +49,7 @@ const check = (name, ok, detail = "") => {
 try {
   // 上流の代わり: 受け取った要求の要点を返す（ingest = 8080、oauth2-proxy = 4180）
   const echoConf = (who) => `:${who === "ingest" ? 8080 : 4180} {
-	respond "who=${who} method={method} uri={uri} host={host} xfp={header.X-Forwarded-Proto} xfh={header.X-Forwarded-Host} verify=[{header.X-Origin-Verify}] user=[{header.X-Forwarded-User}] iap=[{header.X-Goog-Iap-Jwt-Assertion}] email=[{header.X-Auth-Request-Email}] auth=[{header.Authorization}] cookie=[{header.Cookie}] sig=[{header.X-Signature}] agent=[{header.X-Agent-Id}]" 200
+	respond "who=${who} method={method} uri={uri} host={host} xfp={header.X-Forwarded-Proto} xfh={header.X-Forwarded-Host} verify=[{header.X-Origin-Verify}] user=[{header.X-Forwarded-User}] iap=[{header.X-Goog-Iap-Jwt-Assertion}] email=[{header.X-Auth-Request-Email}] auth=[{header.Authorization}] cookie=[{header.Cookie}] sig=[{header.X-Signature}] agent=[{header.X-Agent-Id}] arr=[{header.X-Auth-Request-Redirect}] xfu=[{header.X-Forwarded-Uri}] fwd=[{header.Forwarded}] xri=[{header.X-Real-Ip}]" 200
 }
 `;
   writeFileSync(join(work, "Echo"), `{\n\tadmin off\n\tauto_https off\n}\n${echoConf("ingest")}${echoConf("oauth2")}`);
@@ -145,6 +145,10 @@ try {
       "X-Auth-Request-Email": "attacker@example.com",
       "X-Goog-IAP-JWT-Assertion": "eyJhbGciOiJub25lIn0.e30.",
       "X-Forwarded-Proto": "http",
+      "X-Auth-Request-Redirect": "https://evil.example/",
+      "X-Forwarded-Uri": "//evil.example/",
+      Forwarded: "for=203.0.113.9;host=evil.example",
+      "X-Real-Ip": "203.0.113.9",
       Cookie: "__Host-jrabot=abc",
     },
   });
@@ -158,6 +162,11 @@ try {
   check(
     "クライアントが付けた利用者・IAP の識別ヘッダは捨てる",
     r.body.includes("user=[]") && r.body.includes("iap=[]") && r.body.includes("email=[]"),
+    r.body,
+  );
+  check(
+    "oauth2-proxy が戻り先・IP に使うヘッダ（X-Auth-Request-Redirect・X-Forwarded-Uri・Forwarded・X-Real-Ip）も捨てる",
+    r.body.includes("arr=[]") && r.body.includes("xfu=[]") && r.body.includes("fwd=[]") && r.body.includes("xri=[]"),
     r.body,
   );
   check("Cookie とクエリはそのまま", r.body.includes("cookie=[__Host-jrabot=abc]") && r.body.includes("uri=/api/v1/me?x=1"), r.body);
@@ -198,6 +207,23 @@ try {
   );
   check("エージェントの署名のヘッダはそのまま", a.body.includes(`sig=[${"a".repeat(64)}]`) && a.body.includes("agent=[ag_main]"), a.body);
 
+  // パスの紛らわしい書き方で /internal の遮断を迂回させない（Caddy の一致は整えた後のパス、上流へは元のパス: レビュー A1）
+  for (const p of [
+    "/v1/agent/..;/..;/internal/ops/mode",
+    "/internal;x/ops/mode",
+    "/v1/agent/%2e%2e/internal/ops/mode",
+    "/v1/agent/%2E%2E/%2E%2E/internal/health",
+    "/v1/agent/x%2Finternal",
+    "/a/../internal/health",
+    "/v1/agent/./mode",
+    "/v1/agent/x%00",
+    "/v1/agent/%252e%252e/internal",
+  ]) {
+    const b = await send(port, { path: p, headers: via });
+    check(`紛らわしいパスは 400（上流へ渡さない）: ${p}`, b.status === 400 && !b.body.includes("who="), `${b.status} ${b.body}`);
+  }
+  const q = await send(port, { path: "/v1/agent/mode?from=2026-11-14T00%3A00%3A00Z&x=%2F..%3B", headers: via });
+  check("クエリの中の符号化は妨げない（パスだけを検査）", q.status === 200 && q.body.includes("who=ingest"), q.body);
   check("/internal は 404", (await send(port, { path: "/internal/health", headers: via })).status === 404);
   check("/internal/ops/mode も 404", (await send(port, { path: "/internal/ops/mode", headers: via })).status === 404);
   const h = await send(port, { path: "/_jrabot/health", headers: via });

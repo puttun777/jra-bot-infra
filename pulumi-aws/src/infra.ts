@@ -78,7 +78,7 @@ export function defineAwsInfra(c: AwsInfraConfig, provider: aws.Provider, root =
     o,
   );
   const rt = new aws.ec2.RouteTable(`${p}-rt`, { vpcId: vpc.id, routes: [{ cidrBlock: "0.0.0.0/0", gatewayId: igw.id }], tags }, o);
-  new aws.ec2.RouteTableAssociation(`${p}-rta`, { subnetId: subnet.id, routeTableId: rt.id }, o);
+  const rta = new aws.ec2.RouteTableAssociation(`${p}-rta`, { subnetId: subnet.id, routeTableId: rt.id }, o);
   // 受信の規則はここに書かない（CloudFront の VPC origin の管理 SG からの 80 番だけを、VPC origin を作った後に別の規則で足す）。
   // SSH・DB・Docker の管理ポートは開けない（管理は SSM）。インターネットからの受信は無い
   const sg = new aws.ec2.SecurityGroup(
@@ -419,8 +419,9 @@ export function defineAwsInfra(c: AwsInfraConfig, provider: aws.Provider, root =
       userDataReplaceOnChange: false,
       tags: { ...tags, Name: `${p}-host` },
     },
-    // AMI・user data の変更でインスタンスを作り直さない（データは別の EBS。作り直しは本人の判断で）
-    { ...o, ignoreChanges: ["ami", "userData"] },
+    // AMI・user data の変更でインスタンスを作り直さない（データは別の EBS。作り直しは本人の判断で。手順は docs/AWS_OPERATIONS.md §9）。
+    // 外への経路（IGW・経路表の関連付け）が出来てから作る: user data の取得は一度だけで、失敗すると戻らない（レビュー B2）
+    { ...o, ignoreChanges: ["ami", "userData"], dependsOn: [igw, rt, rta] },
   );
   new aws.ec2.VolumeAttachment(
     `${p}-data-attach`,
@@ -445,7 +446,9 @@ export function defineAwsInfra(c: AwsInfraConfig, provider: aws.Provider, root =
       },
       tags,
     },
-    o,
+    // Deployed まで最大 15 分（AWS の文書）。provider の既定の待ち（15 分）では足りないことがある（レビュー B3）。
+    // インスタンスの置換えは VPC origin のその場の更新になり、使用中は失敗し得るので未対応（手作業: docs/AWS_OPERATIONS.md §9。レビュー B1）
+    { ...o, customTimeouts: { create: "30m", update: "30m", delete: "30m" } },
   );
   // CloudFront が作る管理 SG（このアカウントの distribution の VPC origin からだけ）を受信元にする。管理プレフィックスリストは使わない
   // （公開 IP があるので、他人の distribution からも届いてしまう）
@@ -497,8 +500,9 @@ export function defineAwsInfra(c: AwsInfraConfig, provider: aws.Provider, root =
           domainName: instance.privateDns,
           vpcOriginConfig: { vpcOriginId: vpcOrigin.id, originReadTimeout: 60, originKeepaliveTimeout: 5 },
           // 停止中は早く停止中のページを返す（既定の 3 回 × 10 秒を待たない）
-          connectionAttempts: 1,
-          connectionTimeout: 3,
+          // 起動直後・CPU クレジットの不足で 3 秒・1 回では「停止中」の案内が出ることがある（レビュー B8）。停止中の案内までは最大 約 10 秒
+          connectionAttempts: 2,
+          connectionTimeout: 5,
           customHeaders: [{ name: ORIGIN_VERIFY_HEADER, value: originVerify.result }],
         },
         { originId: "offline", domainName: site.bucketRegionalDomainName, originAccessControlId: oac.id },
