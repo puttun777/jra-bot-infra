@@ -37,7 +37,7 @@ echo "${sha}  node-${NODE.version}-linux-${nodeArch}.tar.xz" | sha256sum -c -
 tar -xJf node-${NODE.version}-linux-${nodeArch}.tar.xz -C /opt
 ln -sfn /opt/node-${NODE.version}-linux-${nodeArch} /opt/node
 
-# データの EBS（MySQL・証明書・手元のバックアップ）。ファイルシステムが無いときだけ作る（既存のデータを消さない）
+# データの EBS（MySQL・手元のバックアップ）。ファイルシステムが無いときだけ作る（既存のデータを消さない）
 for i in $(seq 1 60); do [ -e ${volDev} ] && break; sleep 2; done
 if [ -z "$(blkid -o value -s TYPE ${volDev} || true)" ]; then
   if file -sL ${volDev} | grep -q ': data$'; then mkfs.ext4 -L jrabot-data ${volDev}; else echo "データの EBS に不明な内容がある。初期化しない"; exit 1; fi

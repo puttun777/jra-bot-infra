@@ -7,7 +7,7 @@ import { randomBytes } from "node:crypto";
 import { mkdtempSync, rmSync, statSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { MYSQLDUMP_ARGS } from "../../build/ops/src/aws/host.js";
+import { MYSQLDUMP_ARGS, ownerSeedSql } from "../../build/ops/src/aws/host.js";
 
 const IMAGE = process.env.MYSQL_IMAGE ?? "mysql:8.4";
 const sh = (cmd, input) => {
@@ -45,6 +45,10 @@ try {
       `
       CREATE DATABASE jrabot CHARACTER SET utf8mb4 COLLATE utf8mb4_0900_ai_ci; USE jrabot;
       CREATE TABLE tenant (tenant_id BIGINT PRIMARY KEY, name VARCHAR(100) NOT NULL, created_at DATETIME(6) NOT NULL);
+      CREATE TABLE app_user (tenant_id BIGINT NOT NULL, email VARCHAR(254) CHARACTER SET utf8mb4 COLLATE utf8mb4_0900_bin NOT NULL,
+        role ENUM('VIEWER', 'ADMIN') CHARACTER SET ascii COLLATE ascii_bin NOT NULL, enabled TINYINT(1) NOT NULL DEFAULT 1,
+        created_at DATETIME(6) NOT NULL, updated_at DATETIME(6) NOT NULL, PRIMARY KEY (tenant_id, email), UNIQUE KEY uq_app_user_email (email),
+        FOREIGN KEY (tenant_id) REFERENCES tenant (tenant_id));
       CREATE TABLE races (tenant_id BIGINT, race_id CHAR(12) CHARACTER SET ascii COLLATE ascii_bin, name VARCHAR(100), post DATETIME(6),
         PRIMARY KEY (tenant_id, race_id), FOREIGN KEY (tenant_id) REFERENCES tenant (tenant_id));
       CREATE TABLE odds (tenant_id BIGINT, race_id CHAR(12) CHARACTER SET ascii COLLATE ascii_bin, umaban TINYINT UNSIGNED, odds DOUBLE,
@@ -53,7 +57,8 @@ try {
       CREATE TABLE ev (id BIGINT AUTO_INCREMENT PRIMARY KEY, a DOUBLE, b DOUBLE, s DOUBLE AS (a * b) STORED, note TEXT);
       CREATE TABLE audit (id BIGINT AUTO_INCREMENT PRIMARY KEY, what VARCHAR(50));
       CREATE TRIGGER ev_ai AFTER INSERT ON ev FOR EACH ROW INSERT INTO audit (what) VALUES (CONCAT('ev ', NEW.id));
-      INSERT INTO tenant VALUES (1, '合成テナント', '2026-11-14 01:00:00.123456');`,
+      INSERT INTO tenant VALUES (1, '合成テナント', '2026-11-14 01:00:00.123456');
+      INSERT INTO app_user VALUES (1, 'viewer@example.com', 'VIEWER', 0, '2026-11-14 01:00:00', '2026-11-14 01:00:00');`,
     );
     let rows = "";
     for (let r = 1; r <= 12; r++) {
@@ -92,6 +97,17 @@ try {
   if (a !== b) throw new Error(`チェックサムが一致しない\n${a}\n${b}`);
   if (count(src, srcPw) !== count(dst, pw)) throw new Error("件数が一致しない");
   const triggers = mysql(dst, pw, "SELECT COUNT(*) FROM information_schema.triggers WHERE trigger_schema='jrabot';").trim();
+  // 復元の後の本人の行（hostctl の restore → ensureOwner と同じ SQL。レビュー C1）: 無ければ作り、既存の行は変えない（INSERT IGNORE）
+  if (tables.includes("app_user") && tables.includes("tenant")) {
+    const row = (e) => mysql(dst, pw, `SELECT tenant_id, role, enabled FROM jrabot.app_user WHERE email='${e}';`).trim();
+    const viewerBefore = row("viewer@example.com");
+    mysql(dst, pw, ownerSeedSql("owner-it@example.com"));
+    if (row("owner-it@example.com") !== "1\tADMIN\t1") throw new Error(`復元の後に本人の行が作られない: ${row("owner-it@example.com")}`);
+    mysql(dst, pw, ownerSeedSql("owner-it@example.com"));
+    mysql(dst, pw, ownerSeedSql("viewer@example.com"));
+    if (row("viewer@example.com") !== viewerBefore) throw new Error("既存の行（役割・有効）を変えた");
+    console.log("backup-restore: 復元の後の本人の行 OK（作成・再実行・既存の行を変えない）");
+  }
   console.log(`backup-restore: OK（表 ${tables.length}・チェックサム一致・トリガー ${triggers}・dump ${statSync(dump).size} bytes）`);
   ok = true;
 } finally {

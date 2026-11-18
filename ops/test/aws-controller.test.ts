@@ -5,7 +5,6 @@ import {
   applyRequest,
   beaconMode,
   computeWorkloads,
-  DNS_SINKHOLE,
   type Effects,
   initialAwsState,
   jstToUtcMs,
@@ -62,7 +61,9 @@ function step(
   published?: Mode,
 ): { state: AwsOpsState; effects: Effects } {
   const recorded = MODES.find((m) => m === s.beacon?.mode);
-  return reconcile(s, h, inst, plan ?? emptyPlan(now), now, cfg, published ?? recorded);
+  // 起動中で EC2 が動いていれば、Lambda は CloudFront 経由の確認をする（ここでは届いたとする）
+  const edge = s.mode === "STARTING" && inst.state === "running" ? true : undefined;
+  return reconcile(s, h, inst, plan ?? emptyPlan(now), now, cfg, published ?? recorded, edge);
 }
 
 /** 開催日の無い新しい計画（計画が無いときの警告・保持の試験は明示的に undefined を渡す）。 */
@@ -89,20 +90,40 @@ describe("閲覧用の起動（VIEW）", () => {
     // EC2 は動いたが、ホストの報告は古い（起動の要求より前）
     let r = step(s, at(2), running(), host({ reported_at: at(-5) }));
     assert.equal(r.state.mode, "STARTING");
-    assert.equal(r.effects.dnsIp, "203.0.113.10", "公開 IP が変わったら DNS を書き直す");
-    assert.deepEqual(r.state.aws.last_dns, { ip: "203.0.113.10", at: at(2) }, "書いた IP は状態と一緒に記録する");
     s = r.state;
     r = step(s, at(3), running(), host({ reported_at: at(3), phase: "BOOTING" }));
     assert.equal(r.state.mode, "STARTING");
     r = step(s, at(4), running(), host({ reported_at: at(4) }));
     assert.equal(r.state.mode, "NORMAL");
-    assert.equal(r.effects.dnsIp, undefined);
     // 閲覧だけなのでエージェントには送らせない（ビーコンは STOPPED のまま）
     assert.equal(r.effects.beacon, "STOPPED");
     assert.deepEqual(r.state.workloads, { raceday: false, batch: false });
-    // 1 時間たったら同じ IP でも書き直す（前回の DNS の書込みの失敗を直す）
-    r = step(r.state, at(63), running(), host({ reported_at: at(63) }));
-    assert.equal(r.effects.dnsIp, "203.0.113.10");
+  });
+
+  it("CloudFront 経由で届かない・確かめていない間は NORMAL にしない（ホストが READY でも）。届けば NORMAL", () => {
+    const s = step(startedView(), T0, stopped).state;
+    const ready = host({ reported_at: at(4) });
+    const blocked = reconcile(s, ready, running(), emptyPlan(at(4)), at(4), cfg, "STARTING", false);
+    assert.equal(blocked.state.mode, "STARTING", "CloudFront → VPC origin → Caddy が通るまで利用可能にしない");
+    assert.equal(reconcile(s, ready, running(), emptyPlan(at(4)), at(4), cfg, "STARTING", true).state.mode, "NORMAL");
+    assert.equal(
+      reconcile(s, ready, running(), emptyPlan(at(4)), at(4), cfg, "STARTING", undefined).state.mode,
+      "STARTING",
+      "確かめられなかったときも準備完了にしない",
+    );
+    const late = reconcile(s, ready, running(), emptyPlan(at(25)), at(25), cfg, "STARTING", false);
+    assert.ok(
+      late.effects.notify.some((n) => n.body.includes("CloudFront 経由=届かない")),
+      "起動が完了しない警告に理由を出す",
+    );
+  });
+
+  it("停止・起動で公開 IP が変わっても、制御は DNS を書かない（公開 URL は CloudFront の固定のドメイン）", () => {
+    let s = step(startedView(), T0, stopped).state;
+    s = step(s, at(4), running(), host({ reported_at: at(4) })).state;
+    const r = step(s, at(5), { state: "running", publicIp: "198.51.100.7" }, host({ reported_at: at(5) }));
+    assert.equal(r.state.mode, "NORMAL");
+    assert.deepEqual(Object.keys(r.effects).sort(), ["beacon", "notify", "start", "stop"]);
   });
 
   it("期限で止まる: VIEW の hold が切れたら STOPPING、ホストの排出と EC2 の停止で STOPPED（クリーン・バックアップ成功）", () => {
@@ -249,7 +270,7 @@ describe("開催日（RACEDAY）", () => {
 
   it("ビーコンが NORMAL になるのは開催日の処理中に ingest の準備ができたときだけ", () => {
     let s = reconcile(initialAwsState(T0), undefined, stopped, plan, lead(0), cfg, undefined).state;
-    s = reconcile(s, host({ reported_at: lead(4) }), running(), plan, lead(4), cfg, "STARTING").state;
+    s = reconcile(s, host({ reported_at: lead(4) }), running(), plan, lead(4), cfg, "STARTING", true).state;
     assert.equal(s.mode, "NORMAL");
     assert.equal(beaconMode(s, host({ reported_at: lead(5) }), Date.parse(lead(5)), cfg), "STOPPED", "ingest が未準備");
     const ready = host({
@@ -268,7 +289,7 @@ describe("開催日（RACEDAY）", () => {
   it("閲覧の期限切れは開催日の処理を止めない。ホストが終わりを報告したら RACEDAY の hold を外して止め、同じ日は再び起動しない", () => {
     let s = reconcile(initialAwsState(T0), undefined, stopped, plan, lead(0), cfg, undefined).state;
     s = applyRequest(s, req({ action: "view", minutes: 30, actor: "me" }), lead(1)).state;
-    s = reconcile(s, host({ reported_at: lead(4) }), running(), plan, lead(4), cfg, "STARTING").state;
+    s = reconcile(s, host({ reported_at: lead(4) }), running(), plan, lead(4), cfg, "STARTING", true).state;
     // 閲覧の期限（30 分）が切れても RACEDAY があるので NORMAL のまま
     let r = reconcile(s, host({ reported_at: lead(40) }), running(), plan, lead(40), cfg, "STOPPED");
     assert.equal(r.state.mode, "NORMAL");
@@ -289,7 +310,7 @@ describe("開催日（RACEDAY）", () => {
   it("窓の終わり（最後の発走 + tail）で hold は外れる（ホストの報告が無くても止まる）", () => {
     const end = Date.parse("2026-11-14T07:40:00Z") + cfg.racedayTailMinutes * 60_000;
     let s = reconcile(initialAwsState(T0), undefined, stopped, plan, lead(0), cfg, undefined).state;
-    s = reconcile(s, host({ reported_at: lead(4) }), running(), plan, lead(4), cfg, "STARTING").state;
+    s = reconcile(s, host({ reported_at: lead(4) }), running(), plan, lead(4), cfg, "STARTING", true).state;
     const r = reconcile(s, undefined, running(), plan, new Date(end + 1000).toISOString().replace(/\.\d{3}Z$/, "Z"), cfg, "NORMAL");
     assert.equal(r.state.mode, "STOPPING");
   });
@@ -318,7 +339,7 @@ describe("開催日（RACEDAY）", () => {
     s = applyRequest(s, req({ action: "stop-all", actor: "me", reason: "障害の調査", requested_at: lead(5) }), lead(6)).state;
     assert.equal(s.aws.holds.length, 0);
     assert.ok(s.aws.skip_dates.includes(date));
-    const r = reconcile(s, host({ reported_at: lead(6) }), running(), plan, lead(7), cfg, "STARTING");
+    const r = reconcile(s, host({ reported_at: lead(6) }), running(), plan, lead(7), cfg, "STARTING", true);
     assert.equal(r.state.mode, "STOPPING");
   });
 });
@@ -385,9 +406,7 @@ describe("Lambda の 1 回分（runController）: CAS の競合・副作用・�
       writeBeacon: async (mode, seq) => {
         calls.push(`beacon:${mode}:${seq}`);
       },
-      upsertDns: async (ip) => {
-        calls.push(`dns:${ip}`);
-      },
+      probeSite: async () => true,
       notify: async (title) => {
         calls.push(`notify:${title}`);
       },
@@ -400,7 +419,7 @@ describe("Lambda の 1 回分（runController）: CAS の競合・副作用・�
     const r = await runController(f.ports, req({ action: "view", minutes: 60, actor: "me" }), T0, cfg, undefined);
     assert.equal(r.ok, true);
     assert.ok(r.holdId?.startsWith("view-"));
-    assert.deepEqual(f.calls, ["write:STARTING:2", "start", `dns:${DNS_SINKHOLE}`, "beacon:STARTING:2"]);
+    assert.deepEqual(f.calls, ["write:STARTING:2", "start", "beacon:STARTING:2"]);
   });
 
   it("CAS が競合したら読み直して判断し直す（他の書込みを上書きしない）", async () => {
@@ -428,30 +447,14 @@ describe("Lambda の 1 回分（runController）: CAS の競合・副作用・�
     assert.deepEqual(f.calls, []);
     const idle = fakePorts(initialAwsState(T0), stopped);
     await runController(idle.ports, req({ action: "tick" }), T0, cfg, undefined);
-    assert.deepEqual(
-      idle.calls,
-      ["write:STOPPED:2", `dns:${DNS_SINKHOLE}`, "beacon:STOPPED:2"],
-      "公開中のビーコンが無ければ、記録の seq を進めて書く",
-    );
+    assert.deepEqual(idle.calls, ["write:STOPPED:2", "beacon:STOPPED:2"], "公開中のビーコンが無ければ、記録の seq を進めて書く");
     idle.ports.readBeacon = async () => ({ mode: "STOPPED", seq: 2 });
     await runController(idle.ports, req({ action: "tick" }), at(5), cfg, undefined);
-    assert.deepEqual(idle.calls, ["write:STOPPED:2", `dns:${DNS_SINKHOLE}`, "beacon:STOPPED:2"], "2 回目は何も書かない（冪等）");
+    assert.deepEqual(idle.calls, ["write:STOPPED:2", "beacon:STOPPED:2"], "2 回目は何も書かない（冪等）");
   });
 });
 
 describe("レビューの指摘の修正（2026-11-13）", () => {
-  it("止まったら DNS を文書用のアドレスに向ける（手放した IP を他人が拾っても届かない）", () => {
-    const s = startedView(30);
-    s.mode = "STOPPED";
-    s.desired.mode = "STOPPED";
-    s.aws.holds = [];
-    s.aws.last_dns = { ip: "203.0.113.10", at: at(-10) };
-    const r = step(s, T0, stopped);
-    assert.equal(r.effects.dnsIp, DNS_SINKHOLE);
-    assert.deepEqual(r.state.aws.last_dns, { ip: DNS_SINKHOLE, at: T0 });
-    assert.equal(step(r.state, at(5), stopped).effects.dnsIp, undefined, "書いた後は 1 時間ごとまで書かない");
-  });
-
   it("計画が読めないときは動いている開催日の hold を保ち、警告する。計画が読めれば窓どおり", () => {
     const plan: CalendarPlan = {
       schema_version: 1,
@@ -559,7 +562,7 @@ describe("レビューの指摘の修正（2026-11-13）", () => {
       start: async () => {},
       stop: async () => {},
       writeBeacon: async () => {},
-      upsertDns: async () => {},
+      probeSite: async () => true,
       notify: async () => {},
     };
     // 黙って止まらない: 例外（Lambda のエラー → アラーム）にして、書かない
@@ -651,7 +654,7 @@ describe("再レビューの指摘の修正（2026-11-13）", () => {
       start: async () => {},
       stop: async () => {},
       writeBeacon: async () => {},
-      upsertDns: async () => {},
+      probeSite: async () => true,
       notify: async () => {
         notified++;
         throw new Error("Webhook が未設定");
@@ -664,5 +667,21 @@ describe("再レビューの指摘の修正（2026-11-13）", () => {
     assert.ok(!saved.aws.alerted.some((k) => k.startsWith("plan-")), "印を外す（次の実行で送り直す）");
     await runController(ports, { action: "tick" }, at(6), cfg, undefined);
     assert.equal(notified, 2, "送り直す");
+  });
+});
+
+describe("制御が生きている印（ホストの「制御が止まっている」判定の根拠。レビュー C3）", () => {
+  it("動いている間は状態が変わらなくても 1 時間ごとに last_alive_at を書き、止まっている間は書かない", () => {
+    let s = step(startedView(240), T0, stopped).state;
+    s = step(s, at(4), running(), host({ reported_at: at(4) })).state;
+    assert.equal(s.mode, "NORMAL");
+    const first = s.aws.last_alive_at;
+    assert.ok(first !== null, "動いていれば書く");
+    const soon = step(s, at(30), running(), host({ reported_at: at(30) })).state;
+    assert.equal(soon.aws.last_alive_at, first, "1 時間たつまでは書き直さない（無駄な書込みをしない）");
+    const later = step(soon, at(65), running(), host({ reported_at: at(65) })).state;
+    assert.equal(later.aws.last_alive_at, at(65), "1 時間たてば書く（状態の他の部分が同じでも運用状態が書かれる）");
+    const idle = step(initialAwsState(T0), at(200), stopped).state;
+    assert.equal(idle.aws.last_alive_at, null, "止まっている間は書かない");
   });
 });

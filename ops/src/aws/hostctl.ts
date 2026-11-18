@@ -23,7 +23,18 @@ import { privateKeyFromSecret, publicKeyRaw } from "../beacon.js";
 import { errorMessage } from "../json.js";
 import { MODES } from "../state.js";
 import { clients, S3Json, secureParameter } from "./adapters.js";
-import { type HostAction, type HostFacts, MYSQLDUMP_ARGS, parseJobResult, planHost, SpoolRequestSchema } from "./host.js";
+import {
+  type HostAction,
+  type HostFacts,
+  MYSQLDUMP_ARGS,
+  ORIGIN_VERIFY,
+  ownerSeedSql,
+  parseJobResult,
+  planHost,
+  type SiteConfig,
+  SiteConfigSchema,
+  SpoolRequestSchema,
+} from "./host.js";
 import { type HostStatus, WorkloadsSchema } from "./model.js";
 import {
   assertPinned,
@@ -59,14 +70,13 @@ const HostConfigSchema = z.object({
   ecr_registry: z.string().regex(/^\d{12}\.dkr\.ecr\.ap-northeast-1\.amazonaws\.com$/),
   /** 連続稼働の上限（時間）。制御が動かない場合の最後の安全網（制御の上限 20 時間より長くする）。 */
   max_uptime_hours: z.number().int().min(6).max(72).default(30),
-  site_host: z.string().max(253),
-  cognito_issuer: z.string().url(),
-  cognito_client_id: z.string().min(1),
   allowed_emails: z.array(z.string().email()).min(1).max(5),
   calendar_interval_seconds: z.number().int().min(60).max(1800).default(300),
   backup_keep_local: z.number().int().min(1).max(5).default(2),
 });
 type HostConfig = z.infer<typeof HostConfigSchema>;
+
+const SITE_FILE = `${RUN}/site.json`;
 
 /** S3 の control/release.json（host deploy が成功したときだけ書く）と control/release-candidate.json（ops aws deploy が置く）。
  *  web の release-manifest に、サードパーティのイメージの digest（host_images）を足したもの。 */
@@ -146,13 +156,20 @@ function images(): HostImages {
   return img;
 }
 
+function siteConfig(): SiteConfig {
+  if (!existsSync(SITE_FILE)) throw new HostError("site.json が無い（boot が S3 の control/site.json から作る）");
+  return SiteConfigSchema.parse(JSON.parse(readFileSync(SITE_FILE, "utf8")));
+}
+
 function settings(cfg: HostConfig): ServiceSettings {
+  const site = siteConfig();
   return {
     stateBucket: cfg.state_bucket,
     modelsBucket: cfg.models_bucket,
-    siteHost: cfg.site_host,
-    cognitoIssuer: cfg.cognito_issuer,
-    cognitoClientId: cfg.cognito_client_id,
+    siteHost: site.site_host,
+    cognitoIssuer: site.cognito_issuer,
+    cognitoClientId: site.cognito_client_id,
+    cognitoDomain: site.cognito_domain,
   };
 }
 
@@ -268,7 +285,7 @@ function spoolEntries(): HostFacts["spool"] {
 }
 
 /**
- * 制御（Lambda）が止まっているように見えるか: 運用状態が 3 時間以上書かれていない（動いている間は DNS の書直しで 1 時間ごとに書かれる）か読めない。
+ * 制御（Lambda）が止まっているように見えるか: 運用状態が 3 時間以上書かれていない（動いている間は制御が `aws.last_alive_at` を 1 時間ごとに書く）か読めない。
  * 制御が動いているなら、停止は制御に任せる（開催日の途中に自分で止まらない）。
  */
 async function controllerLooksDead(cfg: HostConfig): Promise<boolean> {
@@ -506,7 +523,17 @@ async function restore(cfg: HostConfig, key: string, confirm: string): Promise<v
     );
   }
   rmSync(file, { force: true });
-  console.log(`restore: ${key} を戻した（アプリは次の tick で起動する）`);
+  // 戻した DB に本人の行が無い（他の環境・古い dump）と、ログインできても 403 になる。boot を待たずに作る（既存の行は変えない。レビュー C1）。
+  // 失敗しても DB は戻っているので、復元の失敗とは区別して伝える（次の boot でも作る）
+  try {
+    ensureOwner(cfg);
+  } catch (e) {
+    console.error(
+      `restore: ${key} を戻した。ただし本人の利用者の行を作れなかった（${e instanceof Error ? e.message : String(e)}）。次の boot で作り直す（aws-stop → aws-maintenance）`,
+    );
+    return;
+  }
+  console.log(`restore: ${key} を戻した（本人の利用者の行を確認した。アプリは次の tick で起動する）`);
 }
 
 async function report(cfg: HostConfig, status: Partial<HostStatus>): Promise<void> {
@@ -629,7 +656,7 @@ async function boot(cfg: HostConfig, releaseKey: string = RELEASE_KEY): Promise<
   mkdirSync(VAR, { recursive: true, mode: 0o700 });
   mkdirSync(SPOOL, { recursive: true, mode: 0o770 });
   run(["chown", "root:10001", SPOOL]);
-  for (const d of ["/data/mysql", "/data/caddy", "/data/backup"]) mkdirSync(d, { recursive: true, mode: 0o750 });
+  for (const d of ["/data/mysql", "/data/backup"]) mkdirSync(d, { recursive: true, mode: 0o750 });
   rmSync(join(RUN, "prepared"), { force: true });
   rmSync(join(RUN, "drained"), { force: true });
   const ssm = clients.ssm();
@@ -671,6 +698,9 @@ async function boot(cfg: HostConfig, releaseKey: string = RELEASE_KEY): Promise<
   envFile("db-migration", { DB_PASSWORD: await required("db-migrate") });
   envFile("ml-train", { DB_PASSWORD: await required("db-mltrain"), MODEL_SIGNING_KEY: modelKey, MODEL_VERIFY_PUBKEY: modelPub });
   envFile("oauth2-proxy", { OAUTH2_PROXY_COOKIE_SECRET: await required("oauth2-cookie-secret") });
+  const originVerify = await required("origin-verify");
+  if (!ORIGIN_VERIFY.test(originVerify)) throw new HostError("SSM の origin-verify の形式が不正（Pulumi が作る英数字）");
+  envFile("caddy", { ORIGIN_VERIFY: originVerify });
   // アプリの運用値（CALENDAR_*・BOT_RUN_*・ALLOWED_USERS など。秘密ではない）とリリース（イメージの digest）。どちらも S3 の control/
   const s3 = clients.s3();
   const get = async (key: string, what: string): Promise<string> => {
@@ -684,6 +714,10 @@ async function boot(cfg: HostConfig, releaseKey: string = RELEASE_KEY): Promise<
   const appText = await get("control/app.env", "Pulumi が置く");
   if (!/^([A-Z][A-Z0-9_]{0,63}=[^\n]{0,2000}\n?)+$/.test(appText)) throw new HostError("control/app.env の形式が不正");
   writeAtomic(join(RUN, "app.env"), appText.endsWith("\n") ? appText : `${appText}\n`, 0o644);
+  // 公開 URL・Cognito（CloudFront を作った後に Pulumi が置く）。形式を確かめてから使う
+  const site = SiteConfigSchema.safeParse(JSON.parse(await get("control/site.json", "Pulumi が CloudFront の後に置く")));
+  if (!site.success) throw new HostError(`control/site.json の形式が不正: ${site.error.issues[0]?.path.join(".") ?? "?"}`);
+  writeAtomic(SITE_FILE, `${JSON.stringify(site.data)}\n`, 0o644);
   writeAtomic(RELEASE_FILE, await get(releaseKey, "先に ops aws deploy を実行する"), 0o644);
   const img = images(); // digest の固定を確かめる
   ensureNetwork();
@@ -693,7 +727,14 @@ async function boot(cfg: HostConfig, releaseKey: string = RELEASE_KEY): Promise<
   const v = runJob("db-migration", cfg, "jrabot-dbm-validate", ["--mode=validate"], { detach: false, timeoutSec: 300 });
   if (v.code === 10) throw new HostError("未適用のマイグレーションがある（deploy で適用する。起動時には適用しない）");
   if (v.code !== 0) throw new HostError(`スキーマの確認が失敗（${v.code}）`);
+  ensureOwner(cfg);
   writeFileSync(join(RUN, "prepared"), nowIso());
+}
+
+function ensureOwner(cfg: HostConfig): void {
+  const [owner] = cfg.allowed_emails;
+  if (owner === undefined) throw new HostError("本人のメールが無い");
+  if (mysqlExec(ownerSeedSql(owner)).code !== 0) throw new HostError("本人の利用者の行を作れない");
 }
 
 /**

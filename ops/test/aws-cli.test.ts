@@ -3,6 +3,7 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { describe, it } from "node:test";
+import { probeSite } from "../src/aws/adapters.js";
 import { buildRelease, CliError, dispatchedAt, HOST_ARGS, parseHostImages, render } from "../src/aws/cli.js";
 
 const D = `@sha256:${"b".repeat(64)}`;
@@ -129,5 +130,27 @@ describe("要求の時刻・ホストのコマンドの引数", () => {
   it("ホストのコマンドの引数はシェルの記号を含められない（SSM のドキュメントの allowedPattern と同じ）", () => {
     assert.ok(HOST_ARGS.test("--task=backtest --from=2026-01-01 --to=2026-06-30"));
     for (const bad of ["; rm -rf /", "$(id)", "a|b", "`id`", "a&&b", "x\ny", "'q'"]) assert.ok(!HOST_ARGS.test(bad), bad);
+  });
+});
+
+describe("CloudFront 経由の準備完了の確認（Lambda）", () => {
+  it("200 で本文が ok のときだけ true。リダイレクト・エラー・時間切れ・CloudFront 以外の URL は false", async () => {
+    const ok: typeof fetch = async (u) => {
+      assert.equal(String(u), "https://d1234567890abc.cloudfront.net/_jrabot/health");
+      return new Response("ok", { status: 200 });
+    };
+    assert.equal(await probeSite("https://d1234567890abc.cloudfront.net", ok), true);
+    assert.equal(
+      await probeSite("https://d1234567890abc.cloudfront.net", async () => new Response("<html>停止中", { status: 503 })),
+      false,
+    );
+    assert.equal(await probeSite("https://d1234567890abc.cloudfront.net", async () => new Response("", { status: 302 })), false);
+    assert.equal(
+      await probeSite("https://d1234567890abc.cloudfront.net", async () => {
+        throw new Error("timeout");
+      }),
+      false,
+    );
+    assert.equal(await probeSite("https://evil.example", ok), false);
   });
 });

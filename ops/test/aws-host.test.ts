@@ -1,7 +1,15 @@
 /** EC2 の上の運用エージェントの判断（純粋な関数）。閲覧用の起動で ingest・bot を動かさない・spool の検査・開催日の後処理・排出。 */
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
-import { type HostFacts, parseJobResult, planHost, SpoolRequestSchema } from "../src/aws/host.js";
+import {
+  type HostFacts,
+  ORIGIN_VERIFY,
+  ownerSeedSql,
+  parseJobResult,
+  planHost,
+  SiteConfigSchema,
+  SpoolRequestSchema,
+} from "../src/aws/host.js";
 
 const NOW = "2026-11-14T03:00:00Z"; // JST 12:00
 const TODAY = "2026-11-14";
@@ -164,5 +172,38 @@ describe("spool の起動は 1 回の実行で 1 つまで", () => {
     );
     assert.equal(a.filter((x) => x.type === "launch-bot-run").length, 1);
     assert.ok(!a.some((x) => x.type === "discard-spool" && x.file === "bot-run-2.json"), "2 つ目は消さずに次の実行へ");
+  });
+});
+
+describe("CloudFront の公開 URL の設定（control/site.json）と本人の利用者の行", () => {
+  const site = {
+    schema_version: 1,
+    site_host: "d1234567890abc.cloudfront.net",
+    cognito_issuer: "https://cognito-idp.ap-northeast-1.amazonaws.com/ap-northeast-1_AbCd1234",
+    cognito_client_id: "abc123def456",
+    cognito_domain: "owner-auth.auth.ap-northeast-1.amazoncognito.com",
+  };
+  it("CloudFront の標準のドメイン・東京の Cognito だけを受け付け、余計な項目は拒否", () => {
+    assert.ok(SiteConfigSchema.safeParse(site).success);
+    for (const bad of [
+      { ...site, site_host: "jrabot.example.com" },
+      { ...site, site_host: "d123.cloudfront.net.evil.example" },
+      { ...site, cognito_issuer: "https://evil.example/ap-northeast-1_X" },
+      { ...site, cognito_domain: "owner.auth.us-east-1.amazoncognito.com" },
+      { ...site, extra: 1 },
+    ])
+      assert.equal(SiteConfigSchema.safeParse(bad).success, false, JSON.stringify(bad));
+  });
+  it("合言葉は英数字 32 文字以上（空・短い・記号は不可: 空だと Caddy の検査が「ヘッダがあれば通す」になる）", () => {
+    assert.ok(ORIGIN_VERIFY.test("A".repeat(48)));
+    for (const bad of ["", "short", `${"a".repeat(40)}*`, `${"a".repeat(40)} x`]) assert.equal(ORIGIN_VERIFY.test(bad), false, bad);
+  });
+  it("本人の行は INSERT IGNORE（既存の行を変えない）・小文字・ADMIN・テナント 1。不正なメールは拒否（SQL に入れない）", () => {
+    const sql = ownerSeedSql(" Owner@Example.com ");
+    assert.match(sql, /INSERT IGNORE INTO tenant \(tenant_id, name, created_at\) VALUES \(1, 'owner'/);
+    assert.match(sql, /INSERT IGNORE INTO app_user .* VALUES \(1, 'owner@example\.com', 'ADMIN', 1,/);
+    assert.ok(!/UPDATE|DELETE|REPLACE/.test(sql));
+    for (const bad of ["x'); DROP TABLE app_user; --@example.com", "no-at", "a@b", "a b@example.com"])
+      assert.throws(() => ownerSeedSql(bad));
   });
 });

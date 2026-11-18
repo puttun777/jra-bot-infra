@@ -159,3 +159,35 @@ export const MYSQLDUMP_ARGS = [
   "--databases",
   "jrabot",
 ] as const;
+
+/**
+ * S3 の control/site.json（Pulumi が CloudFront を作った後に置く。公開 URL・Cognito。秘密ではない）。起動のたびに読み、/run/jrabot/site.json に写す。
+ * user data（host.json）に入れないのは、CloudFront → VPC origin → このインスタンスの順に作るため（入れると循環する）。
+ */
+export const SiteConfigSchema = z
+  .object({
+    schema_version: z.literal(1),
+    site_host: z.string().regex(/^d[a-z0-9]{6,32}\.cloudfront\.net$/, "CloudFront の標準のドメイン（d*.cloudfront.net）"),
+    cognito_issuer: z.string().regex(/^https:\/\/cognito-idp\.ap-northeast-1\.amazonaws\.com\/ap-northeast-1_[A-Za-z0-9]{1,55}$/),
+    cognito_client_id: z.string().regex(/^[A-Za-z0-9]{1,128}$/),
+    cognito_domain: z.string().regex(/^[a-z0-9](?:[a-z0-9-]{1,61}[a-z0-9])\.auth\.ap-northeast-1\.amazoncognito\.com$/),
+  })
+  .strict();
+export type SiteConfig = z.infer<typeof SiteConfigSchema>;
+
+/** CloudFront → オリジンの合言葉（Pulumi が SSM に置く。英数字 32 文字以上。空だと Caddy の検査が「ヘッダがあれば通す」になるので必ず確かめる）。 */
+export const ORIGIN_VERIFY = /^[A-Za-z0-9]{32,128}$/;
+
+/**
+ * 本人の利用者の行（テナント 1・ADMIN）を無ければ作る（web CONTRACTS §11.1: ALLOWED_USERS ∧ app_user の有効な行 ∧ ADMIN_USERS）。
+ * 既にある行は変えない（INSERT IGNORE: 本人が無効にした行を勝手に戻さない）。メールは host.json の allowed_emails（Pulumi の ownerEmail）。
+ */
+export function ownerSeedSql(email: string): string {
+  const e = email.trim().toLowerCase();
+  if (!/^[a-z0-9._%+-]{1,64}@[a-z0-9.-]{1,189}\.[a-z]{2,63}$/.test(e)) throw new Error("本人のメールの形式が不正");
+  return [
+    "USE jrabot;",
+    "INSERT IGNORE INTO tenant (tenant_id, name, created_at) VALUES (1, 'owner', UTC_TIMESTAMP(6));",
+    `INSERT IGNORE INTO app_user (tenant_id, email, role, enabled, created_at, updated_at) VALUES (1, '${e}', 'ADMIN', 1, UTC_TIMESTAMP(6), UTC_TIMESTAMP(6));`,
+  ].join("\n");
+}

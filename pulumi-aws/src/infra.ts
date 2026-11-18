@@ -1,11 +1,14 @@
-// AWS の資源（東京リージョン）。**適用（pulumi up）は本人の承認後**。費用の内訳は docs/CLOUD_COSTS.md §12、設計は docs/AWS_ARCHITECTURE.md。
-// 固定費の大きいもの（RDS・NAT Gateway・ALB・Elastic IP・KMS の顧客管理の鍵・Secrets Manager・VPC エンドポイント）は使わない。
+// AWS の資源（東京リージョン）。**適用（pulumi up）は本人の承認後**。費用の内訳は docs/CLOUD_COSTS.md §13、設計は docs/AWS_ARCHITECTURE.md。
+// 公開 URL は CloudFront の標準のドメイン（https://d*.cloudfront.net。独自ドメイン・Route 53・ACM・Let's Encrypt は使わない: I-050）。
+// CloudFront → EC2 は VPC origin（AWS の網の中。EC2 の受信は CloudFront の VPC origin の管理 SG からだけ）。
+// 固定費の大きいもの（RDS・NAT Gateway・ALB・Elastic IP・KMS の顧客管理の鍵・Secrets Manager・VPC エンドポイント・WAF）は使わない。
 // Lambda は VPC に接続しない（NAT が要らない）。データの EBS は Pulumi の protect と retainOnDelete で誤って消さない。
 import { createHash } from "node:crypto";
 import * as fs from "node:fs";
 import * as path from "node:path";
 import * as aws from "@pulumi/aws";
 import * as pulumi from "@pulumi/pulumi";
+import * as random from "@pulumi/random";
 import { type AwsInfraConfig, arch, renderAppEnv } from "./config.js";
 import { renderUserData } from "./userdata.js";
 
@@ -25,6 +28,16 @@ export const OPS_ACTIONS = [
   "ssm:PutParameter",
 ] as const;
 
+/** CloudFront の管理ポリシー（docs.aws.amazon.com の『Use managed cache policies』『Use managed origin request policies』。2026-11-17 に確認）。 */
+export const CACHE_POLICY_CACHING_DISABLED = "4135ea2d-6df8-44a3-9df3-4b5a84be39ad";
+export const ORIGIN_REQUEST_POLICY_ALL_VIEWER = "216adef6-5c7f-47e4-b989-5492eafa07d3";
+/** CloudFront の VPC origin の管理 SG の名前（AWS が作る。名前は CloudFront-VPCOrigins-Service-SG で始まる）。 */
+export const VPC_ORIGIN_SERVICE_SG = "CloudFront-VPCOrigins-Service-SG*";
+/** CloudFront → オリジンの合言葉のヘッダ（Caddy が検査して取り除く。VPC origin の SG に加えた多層の防御）。 */
+export const ORIGIN_VERIFY_HEADER = "X-Origin-Verify";
+/** 停止中に見せるページ（S3。CloudFront が 502・504 の代わりに返す。エージェントには 503 = 待機: web Responses.cs）。 */
+export const OFFLINE_PAGE_PATH = "/_offline/index.html";
+
 function policyDoc(statements: unknown[]): string {
   return JSON.stringify({ Version: "2012-10-17", Statement: statements });
 }
@@ -41,8 +54,9 @@ export interface AwsOutputs {
   readonly ecrRegistry: string;
   readonly cognitoIssuer: pulumi.Output<string>;
   readonly cognitoClientId: pulumi.Output<string>;
-  readonly siteUrl: string;
-  readonly zoneNameServers: pulumi.Output<string[]> | undefined;
+  readonly siteUrl: pulumi.Output<string>;
+  readonly distributionId: pulumi.Output<string>;
+  readonly vpcOriginId: pulumi.Output<string>;
 }
 
 export function defineAwsInfra(c: AwsInfraConfig, provider: aws.Provider, root = "."): AwsOutputs {
@@ -52,26 +66,26 @@ export function defineAwsInfra(c: AwsInfraConfig, provider: aws.Provider, root =
   const region = "ap-northeast-1";
   const ecrRegistry = `${c.accountId}.dkr.ecr.${region}.amazonaws.com`;
 
-  // ---------------------------------------------------------------- ネットワーク（パブリックの 1 サブネット。NAT なし）
+  // ---------------------------------------------------------------- ネットワーク（1 サブネット。NAT なし）
+  // 外向き（ECR・S3・SSM・Cognito・Discord・OS の更新）はインターネットゲートウェイと公開 IPv4（動いている間だけ課金）で出る。
+  // 受信は SG で CloudFront の VPC origin の管理 SG からの 80 番だけ（公開 IP があっても、インターネットから直接は届かない）。
+  // AWS の文書は VPC origin を private サブネットで説明している。公開の経路があるサブネットでの動作は初回の構築で確かめる（docs/AWS_OPERATIONS.md の V-1）。
   const vpc = new aws.ec2.Vpc(`${p}-vpc`, { cidrBlock: "10.80.0.0/16", enableDnsHostnames: true, enableDnsSupport: true, tags }, o);
   const igw = new aws.ec2.InternetGateway(`${p}-igw`, { vpcId: vpc.id, tags }, o);
   const subnet = new aws.ec2.Subnet(
     `${p}-public`,
-    { vpcId: vpc.id, cidrBlock: "10.80.1.0/24", availabilityZone: c.availabilityZone, mapPublicIpOnLaunch: true, tags },
+    { vpcId: vpc.id, cidrBlock: "10.80.1.0/24", availabilityZoneId: c.availabilityZoneId, mapPublicIpOnLaunch: false, tags },
     o,
   );
   const rt = new aws.ec2.RouteTable(`${p}-rt`, { vpcId: vpc.id, routes: [{ cidrBlock: "0.0.0.0/0", gatewayId: igw.id }], tags }, o);
-  new aws.ec2.RouteTableAssociation(`${p}-rta`, { subnetId: subnet.id, routeTableId: rt.id }, o);
-  // 受け付けるのは HTTPS（と証明書の取得・リダイレクトの HTTP）だけ。SSH・DB・Docker の管理ポートは開けない（管理は SSM）
+  const rta = new aws.ec2.RouteTableAssociation(`${p}-rta`, { subnetId: subnet.id, routeTableId: rt.id }, o);
+  // 受信の規則はここに書かない（CloudFront の VPC origin の管理 SG からの 80 番だけを、VPC origin を作った後に別の規則で足す）。
+  // SSH・DB・Docker の管理ポートは開けない（管理は SSM）。インターネットからの受信は無い
   const sg = new aws.ec2.SecurityGroup(
     `${p}-web`,
     {
       vpcId: vpc.id,
-      description: "jra-bot: HTTPS and ACME HTTP only (no SSH, no DB)",
-      ingress: [
-        { protocol: "tcp", fromPort: 443, toPort: 443, cidrBlocks: ["0.0.0.0/0"], description: "HTTPS" },
-        { protocol: "tcp", fromPort: 80, toPort: 80, cidrBlocks: ["0.0.0.0/0"], description: "ACME HTTP-01 and redirect" },
-      ],
+      description: "jra-bot: HTTP from the CloudFront VPC origin only (no SSH, no DB, no internet ingress)",
       egress: [{ protocol: "-1", fromPort: 0, toPort: 0, cidrBlocks: ["0.0.0.0/0"] }],
       tags,
     },
@@ -83,7 +97,7 @@ export function defineAwsInfra(c: AwsInfraConfig, provider: aws.Provider, root =
     const b = new aws.s3.BucketV2(
       `${p}-${name}`,
       { bucket: `${p}-${name}-${c.accountId}`, forceDestroy: false, tags },
-      { ...o, protect: name !== "beacon" },
+      { ...o, protect: name !== "beacon" && name !== "site" },
     );
     new aws.s3.BucketServerSideEncryptionConfigurationV2(
       `${p}-${name}-sse`,
@@ -99,10 +113,13 @@ export function defineAwsInfra(c: AwsInfraConfig, provider: aws.Provider, root =
   const models = bucket("models", true);
   // バックアップもバージョニング（ホストは PutObject だけ。乗っ取られて上書きされても旧版が 7 日残る。DeleteObjectVersion は誰にも渡さない）
   const backups = bucket("backups", true);
+  // 停止中のページ（公開しない。CloudFront の OAC だけが読む）
+  const site = bucket("site", false);
   for (const [n, b] of [
     ["ops-state", state],
     ["models", models],
     ["backups", backups],
+    ["site", site],
   ] as const) {
     new aws.s3.BucketPublicAccessBlock(
       `${n}-pab`,
@@ -280,32 +297,6 @@ export function defineAwsInfra(c: AwsInfraConfig, provider: aws.Provider, root =
     { ...o, protect: true },
   );
   new aws.cognito.UserPoolDomain(`${p}-auth-domain`, { domain: c.cognitoDomainPrefix, userPoolId: pool.id }, o);
-  const client = new aws.cognito.UserPoolClient(
-    `${p}-web`,
-    {
-      userPoolId: pool.id,
-      generateSecret: true,
-      allowedOauthFlowsUserPoolClient: true,
-      allowedOauthFlows: ["code"],
-      allowedOauthScopes: ["openid", "email"],
-      supportedIdentityProviders: ["COGNITO"],
-      callbackUrls: [`https://${c.siteHost}/oauth2/callback`],
-      logoutUrls: [`https://${c.siteHost}/`],
-      preventUserExistenceErrors: "ENABLED",
-      idTokenValidity: 60,
-      accessTokenValidity: 60,
-      refreshTokenValidity: 1,
-      tokenValidityUnits: { idToken: "minutes", accessToken: "minutes", refreshToken: "days" },
-      explicitAuthFlows: ["ALLOW_REFRESH_TOKEN_AUTH"],
-    },
-    o,
-  );
-  // client secret は Pulumi の secret 出力（state では暗号化）→ SSM の SecureString（ホストが起動時に読む）
-  new aws.ssm.Parameter(
-    "cognito-client-secret",
-    { name: `${SSM_PREFIX}/cognito-client-secret`, type: "SecureString", value: client.clientSecret, tags },
-    o,
-  );
   new aws.cognito.User(
     "owner",
     {
@@ -318,17 +309,11 @@ export function defineAwsInfra(c: AwsInfraConfig, provider: aws.Provider, root =
   );
   const issuer = pulumi.interpolate`https://cognito-idp.${region}.amazonaws.com/${pool.id}`;
 
-  // ---------------------------------------------------------------- DNS（任意で Route 53 のホストゾーンを作る。A レコードは制御の Lambda が起動のたびに書く）
-  const zone = c.createZone
-    ? new aws.route53.Zone(`${p}-zone`, { name: c.zoneName ?? c.siteHost, forceDestroy: false, tags }, { ...o, protect: true })
-    : undefined;
-  const zoneId: pulumi.Input<string> = zone?.zoneId ?? c.dnsZoneId ?? "";
-
   // ---------------------------------------------------------------- EC2 とデータの EBS
   const data = new aws.ebs.Volume(
     `${p}-data`,
     {
-      availabilityZone: c.availabilityZone,
+      availabilityZone: subnet.availabilityZone,
       size: c.dataVolumeGb,
       type: "gp3",
       encrypted: true,
@@ -399,16 +384,15 @@ export function defineAwsInfra(c: AwsInfraConfig, provider: aws.Provider, root =
     o,
   );
   const profile = new aws.iam.InstanceProfile(`${p}-host`, { role: role.name }, o);
-  const hostJson = pulumi.all([state.bucket, backups.bucket, models.bucket, issuer, client.id]).apply(([sb, bb, mb, iss, cid]) =>
+  // 公開 URL・Cognito の client はここに入れない（CloudFront → VPC origin → このインスタンスの順に作るので、循環する）。
+  // それらは CloudFront を作った後に S3 の control/site.json に置き、ホストが起動のたびに読む
+  const hostJson = pulumi.all([state.bucket, backups.bucket, models.bucket]).apply(([sb, bb, mb]) =>
     JSON.stringify({
       state_bucket: sb,
       backup_bucket: bb,
       models_bucket: mb,
       ssm_prefix: SSM_PREFIX,
       ecr_registry: ecrRegistry,
-      site_host: c.siteHost,
-      cognito_issuer: iss,
-      cognito_client_id: cid,
       allowed_emails: [c.ownerEmail],
     }),
   );
@@ -423,7 +407,8 @@ export function defineAwsInfra(c: AwsInfraConfig, provider: aws.Provider, root =
       subnetId: subnet.id,
       vpcSecurityGroupIds: [sg.id],
       iamInstanceProfile: profile.name,
-      associatePublicIpAddress: true, // Elastic IP は持たない（停止中に課金されないように。IP は起動のたびに変わり DNS で追う）
+      // 公開 IPv4 は外向きの通信だけに使う（受信は SG で塞ぐ）。Elastic IP は持たない（停止中に課金されないように）。公開 URL は CloudFront なので IP が変わっても同じ
+      associatePublicIpAddress: true,
       creditSpecification: { cpuCredits: c.cpuCredits },
       disableApiTermination: true,
       instanceInitiatedShutdownBehavior: "stop",
@@ -434,12 +419,203 @@ export function defineAwsInfra(c: AwsInfraConfig, provider: aws.Provider, root =
       userDataReplaceOnChange: false,
       tags: { ...tags, Name: `${p}-host` },
     },
-    // AMI・user data の変更でインスタンスを作り直さない（データは別の EBS。作り直しは本人の判断で）
-    { ...o, ignoreChanges: ["ami", "userData"] },
+    // AMI・user data の変更でインスタンスを作り直さない（データは別の EBS。作り直しは本人の判断で。手順は docs/AWS_OPERATIONS.md §9）。
+    // 外への経路（IGW・経路表の関連付け）が出来てから作る: user data の取得は一度だけで、失敗すると戻らない（レビュー B2）
+    { ...o, ignoreChanges: ["ami", "userData"], dependsOn: [igw, rt, rta] },
   );
   new aws.ec2.VolumeAttachment(
     `${p}-data-attach`,
     { deviceName: "/dev/sdf", volumeId: data.id, instanceId: instance.id, stopInstanceBeforeDetaching: true },
+    o,
+  );
+
+  // ---------------------------------------------------------------- CloudFront（標準の URL・標準の証明書）と VPC origin
+  // 作る順: EC2（作成時は動いている。VPC origin は対象が Active でないと作れない）→ VPC origin（Deployed まで最大 15 分）→ 管理 SG からの受信 →
+  // distribution → Cognito の戻り先（distribution のドメインが決まってから）→ control/site.json → 制御の定期実行（最後: 初回の構築の途中で止めない）
+  const vpcOrigin = new aws.cloudfront.VpcOrigin(
+    `${p}-origin`,
+    {
+      vpcOriginEndpointConfig: {
+        name: `${p}-host`,
+        arn: instance.arn,
+        httpPort: 80,
+        httpsPort: 443,
+        // CloudFront → VPC origin は AWS の網の中（公開のインターネットを通らない）。EC2 に公開の証明書は置けないので HTTP（docs/AWS_ARCHITECTURE.md §6）
+        originProtocolPolicy: "http-only",
+        originSslProtocols: { items: ["TLSv1.2"], quantity: 1 },
+      },
+      tags,
+    },
+    // Deployed まで最大 15 分（AWS の文書）。provider の既定の待ち（15 分）では足りないことがある（レビュー B3）。
+    // インスタンスの置換えは VPC origin のその場の更新になり、使用中は失敗し得るので未対応（手作業: docs/AWS_OPERATIONS.md §9。レビュー B1）
+    { ...o, customTimeouts: { create: "30m", update: "30m", delete: "30m" } },
+  );
+  // CloudFront が作る管理 SG（このアカウントの distribution の VPC origin からだけ）を受信元にする。管理プレフィックスリストは使わない
+  // （公開 IP があるので、他人の distribution からも届いてしまう）
+  const serviceSg = aws.ec2.getSecurityGroupOutput(
+    {
+      filters: [
+        { name: "vpc-id", values: [vpc.id] },
+        { name: "group-name", values: [VPC_ORIGIN_SERVICE_SG] },
+      ],
+    },
+    { ...o, dependsOn: [vpcOrigin] },
+  );
+  const ingressFromCloudFront = new aws.vpc.SecurityGroupIngressRule(
+    `${p}-from-cloudfront`,
+    {
+      securityGroupId: sg.id,
+      referencedSecurityGroupId: serviceSg.id,
+      ipProtocol: "tcp",
+      fromPort: 80,
+      toPort: 80,
+      description: "HTTP from the CloudFront VPC origin (service-managed SG) only",
+      tags,
+    },
+    o,
+  );
+  // CloudFront → オリジンの合言葉（Caddy が検査する。値は Pulumi の state で暗号化・SSM の SecureString でホストへ）
+  const originVerify = new random.RandomPassword(`${p}-origin-verify`, { length: 48, special: false }, o);
+  new aws.ssm.Parameter(
+    "origin-verify",
+    { name: `${SSM_PREFIX}/origin-verify`, type: "SecureString", value: originVerify.result, tags },
+    o,
+  );
+  const oac = new aws.cloudfront.OriginAccessControl(
+    `${p}-site-oac`,
+    { name: `${p}-site`, originAccessControlOriginType: "s3", signingBehavior: "always", signingProtocol: "sigv4" },
+    o,
+  );
+  const distribution = new aws.cloudfront.Distribution(
+    `${p}-cdn`,
+    {
+      enabled: true,
+      comment: "jra-bot (owner only)",
+      httpVersion: "http2and3",
+      isIpv6Enabled: true,
+      priceClass: "PriceClass_200",
+      origins: [
+        {
+          originId: "host",
+          domainName: instance.privateDns,
+          vpcOriginConfig: { vpcOriginId: vpcOrigin.id, originReadTimeout: 60, originKeepaliveTimeout: 5 },
+          // 停止中は早く停止中のページを返す（既定の 3 回 × 10 秒を待たない）
+          // 起動直後・CPU クレジットの不足で 3 秒・1 回では「停止中」の案内が出ることがある（レビュー B8）。停止中の案内までは最大 約 10 秒
+          connectionAttempts: 2,
+          connectionTimeout: 5,
+          customHeaders: [{ name: ORIGIN_VERIFY_HEADER, value: originVerify.result }],
+        },
+        { originId: "offline", domainName: site.bucketRegionalDomainName, originAccessControlId: oac.id },
+      ],
+      // 画面・API・認証・エージェントは**キャッシュしない**（CachingDisabled）。Cookie・Authorization・クエリ・全メソッドをそのまま渡す（AllViewer）
+      defaultCacheBehavior: {
+        targetOriginId: "host",
+        viewerProtocolPolicy: "redirect-to-https",
+        allowedMethods: ["GET", "HEAD", "OPTIONS", "PUT", "POST", "PATCH", "DELETE"],
+        cachedMethods: ["GET", "HEAD"],
+        cachePolicyId: CACHE_POLICY_CACHING_DISABLED,
+        originRequestPolicyId: ORIGIN_REQUEST_POLICY_ALL_VIEWER,
+        compress: false,
+      },
+      orderedCacheBehaviors: [
+        {
+          pathPattern: "/_offline/*",
+          targetOriginId: "offline",
+          viewerProtocolPolicy: "https-only",
+          allowedMethods: ["GET", "HEAD"],
+          cachedMethods: ["GET", "HEAD"],
+          cachePolicyId: CACHE_POLICY_CACHING_DISABLED,
+          compress: false,
+        },
+      ],
+      // エラーはキャッシュしない（停止中の 502・504 が再起動の後も残らない。認証の失敗・アプリの 4xx/5xx も他の要求に返さない）。
+      // 502・504（EC2 に届かない = 停止中）だけ停止中のページに置き換える。503 はアプリ・ingest の応答（X-Ops-Mode 付き）なので置き換えない
+      customErrorResponses: [
+        ...[400, 403, 404, 405, 414, 416, 500, 501, 503].map((code) => ({ errorCode: code, errorCachingMinTtl: 0 })),
+        ...[502, 504].map((code) => ({ errorCode: code, errorCachingMinTtl: 0, responseCode: 503, responsePagePath: OFFLINE_PAGE_PATH })),
+      ],
+      restrictions: { geoRestriction: { restrictionType: "none" } },
+      viewerCertificate: { cloudfrontDefaultCertificate: true },
+      waitForDeployment: true,
+      tags,
+    },
+    { ...o, dependsOn: [ingressFromCloudFront] },
+  );
+  new aws.s3.BucketPolicy(
+    "site-policy",
+    {
+      bucket: site.id,
+      policy: pulumi.all([site.arn, tlsOnly(site), distribution.arn]).apply(([arn, tls, dist]) =>
+        policyDoc([
+          tls,
+          {
+            Sid: "CloudFrontOnly",
+            Effect: "Allow",
+            Principal: { Service: "cloudfront.amazonaws.com" },
+            Action: "s3:GetObject",
+            Resource: `${arn}/_offline/*`,
+            Condition: { StringEquals: { "AWS:SourceArn": dist } },
+          },
+        ]),
+      ),
+    },
+    o,
+  );
+  new aws.s3.BucketObjectv2(
+    "offline-page",
+    {
+      bucket: site.id,
+      key: OFFLINE_PAGE_PATH.slice(1),
+      source: new pulumi.asset.FileAsset(path.join(root, "pulumi-aws/host/offline.html")),
+      contentType: "text/html; charset=utf-8",
+      cacheControl: "no-store",
+    },
+    o,
+  );
+  const siteHost = distribution.domainName;
+  const siteUrl = pulumi.interpolate`https://${siteHost}`;
+  const cognitoDomain = `${c.cognitoDomainPrefix}.auth.${region}.amazoncognito.com`;
+
+  // Cognito の client（戻り先・ログアウトの先は CloudFront の URL。distribution の後に作る）
+  const client = new aws.cognito.UserPoolClient(
+    `${p}-web`,
+    {
+      userPoolId: pool.id,
+      generateSecret: true,
+      allowedOauthFlowsUserPoolClient: true,
+      allowedOauthFlows: ["code"],
+      allowedOauthScopes: ["openid", "email"],
+      supportedIdentityProviders: ["COGNITO"],
+      callbackUrls: [pulumi.interpolate`https://${siteHost}/oauth2/callback`],
+      logoutUrls: [pulumi.interpolate`https://${siteHost}/`],
+      preventUserExistenceErrors: "ENABLED",
+      idTokenValidity: 60,
+      accessTokenValidity: 60,
+      refreshTokenValidity: 1,
+      tokenValidityUnits: { idToken: "minutes", accessToken: "minutes", refreshToken: "days" },
+      explicitAuthFlows: ["ALLOW_REFRESH_TOKEN_AUTH"],
+    },
+    o,
+  );
+  // client secret は Pulumi の secret 出力（state では暗号化）→ SSM の SecureString（ホストが起動時に読む）
+  new aws.ssm.Parameter(
+    "cognito-client-secret",
+    { name: `${SSM_PREFIX}/cognito-client-secret`, type: "SecureString", value: client.clientSecret, tags },
+    o,
+  );
+  // ホストが起動のたびに読む公開 URL と Cognito の設定（秘密ではない）
+  const siteJson = new aws.s3.BucketObjectv2(
+    "site-json",
+    {
+      bucket: state.id,
+      key: "control/site.json",
+      content: pulumi
+        .all([siteHost, issuer, client.id])
+        .apply(([h, iss, cid]) =>
+          JSON.stringify({ schema_version: 1, site_host: h, cognito_issuer: iss, cognito_client_id: cid, cognito_domain: cognitoDomain }),
+        ),
+      contentType: "application/json",
+    },
     o,
   );
 
@@ -494,7 +670,7 @@ export function defineAwsInfra(c: AwsInfraConfig, provider: aws.Provider, root =
     `${p}-controller-inline`,
     {
       role: lambdaRole.id,
-      policy: pulumi.all([state.arn, beacon.arn, instance.arn, logGroup.arn, pulumi.output(zoneId)]).apply(([s, bc, inst, lg, zid]) =>
+      policy: pulumi.all([state.arn, beacon.arn, instance.arn, logGroup.arn]).apply(([s, bc, inst, lg]) =>
         policyDoc([
           { Sid: "Logs", Effect: "Allow", Action: ["logs:CreateLogStream", "logs:PutLogEvents"], Resource: `${lg}:*` },
           { Sid: "State", Effect: "Allow", Action: ["s3:GetObject", "s3:PutObject"], Resource: [`${s}/state/*`, `${s}/history/*`] },
@@ -511,22 +687,6 @@ export function defineAwsInfra(c: AwsInfraConfig, provider: aws.Provider, root =
               `arn:aws:ssm:${region}:${c.accountId}:parameter${SSM_PREFIX}/discord-error-webhook`,
             ],
           },
-          ...(zid === ""
-            ? []
-            : [
-                {
-                  Sid: "Dns",
-                  Effect: "Allow",
-                  Action: ["route53:ChangeResourceRecordSets"],
-                  Resource: `arn:aws:route53:::hostedzone/${zid}`,
-                  Condition: {
-                    "ForAllValues:StringEquals": {
-                      "route53:ChangeResourceRecordSetsNormalizedRecordNames": [c.siteHost],
-                      "route53:ChangeResourceRecordSetsRecordTypes": ["A"],
-                    },
-                  },
-                },
-              ]),
         ]),
       ),
     },
@@ -545,15 +705,15 @@ export function defineAwsInfra(c: AwsInfraConfig, provider: aws.Provider, root =
       timeout: 60,
       loggingConfig: { logFormat: "Text", logGroup: logGroup.name },
       environment: {
-        variables: pulumi.all([state.bucket, beacon.bucket, instance.id, pulumi.output(zoneId)]).apply(([sb, bb, iid, zid]) => ({
+        variables: pulumi.all([state.bucket, beacon.bucket, instance.id, siteUrl]).apply(([sb, bb, iid, url]) => ({
           STATE_BUCKET: sb,
           BEACON_BUCKET: bb,
           INSTANCE_ID: iid,
           BEACON_KID: "beacon-1",
           BEACON_KEY_PARAM: `${SSM_PREFIX}/beacon/signing-key`,
           NOTIFY_WEBHOOK_PARAM: `${SSM_PREFIX}/discord-error-webhook`,
-          SITE_URL: `https://${c.siteHost}`,
-          ...(zid === "" ? {} : { DNS_ZONE_ID: zid, DNS_NAME: c.siteHost }),
+          // 公開 URL（要約の表示と、CloudFront 経由の準備完了の確認: /_jrabot/health）
+          SITE_URL: url,
           ...(c.controller === undefined ? {} : { CONTROLLER_CONFIG: JSON.stringify(c.controller) }),
         })),
       },
@@ -590,7 +750,8 @@ export function defineAwsInfra(c: AwsInfraConfig, provider: aws.Provider, root =
         retryPolicy: { maximumRetryAttempts: 0 },
       },
     },
-    o,
+    // 初回の構築が終わってから動かす（VPC origin は EC2 が動いていないと作れない。先に動くと『制御を通さない起動』として止めてしまう）
+    { ...o, dependsOn: [distribution, siteJson, ingressFromCloudFront] },
   );
 
   // 制御そのものの失敗の検知（制御が動かないと自動停止も通知も止まる）: Lambda のエラーが続く・定期実行が来ない → メール（SNS。購読の確認は本人）
@@ -786,8 +947,9 @@ export function defineAwsInfra(c: AwsInfraConfig, provider: aws.Provider, root =
     ecrRegistry,
     cognitoIssuer: issuer,
     cognitoClientId: client.id,
-    siteUrl: `https://${c.siteHost}`,
-    zoneNameServers: zone?.nameServers,
+    siteUrl,
+    distributionId: distribution.id,
+    vpcOriginId: vpcOrigin.id,
   };
 }
 

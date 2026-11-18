@@ -3,7 +3,7 @@
  * GitHub Actions（本人の手動実行。OIDC のロールは lambda:InvokeFunction だけ）が閲覧・延長・停止・状態確認などの要求を送る。
  *
  * 1 回の呼び出し: 運用状態・ホストの報告・開催予定・EC2・公開中のビーコンを読む → 要求を反映 → 収束（controller.reconcile）→
- * CAS で書く（競合したら読み直してやり直す。最大 4 回）→ 副作用（起動・停止・DNS・ビーコン・通知。どれも冪等）→ 要約を返す。
+ * CAS で書く（競合したら読み直してやり直す。最大 4 回）→ 副作用（起動・停止・ビーコン・通知。どれも冪等）→ 要約を返す。
  * 同時に呼ばれても（定期実行と要求が重なっても）CAS が 1 つだけを通し、もう一方は新しい状態から判断し直す。
  */
 import type { KeyObject } from "node:crypto";
@@ -13,7 +13,7 @@ import { canonicalEqual, errorMessage } from "../json.js";
 import { ConflictError, UnknownOutcomeError } from "../ports.js";
 import * as S from "../state.js";
 import { MODES, type Mode } from "../state.js";
-import { clients, Ec2, notifyDiscord, S3Json, secureParameter, upsertA } from "./adapters.js";
+import { clients, Ec2, notifyDiscord, probeSite, S3Json, secureParameter } from "./adapters.js";
 import { applyRequest, initialAwsState, RequestRejected, reconcile, summarize } from "./controller.js";
 import {
   type AwsOpsState,
@@ -43,7 +43,8 @@ export interface ControllerPorts {
   start(): Promise<void>;
   stop(force: boolean): Promise<void>;
   writeBeacon(mode: Mode, seq: number, now: string): Promise<void>;
-  upsertDns(ip: string): Promise<void>;
+  /** 公開 URL（CloudFront）経由の準備完了の確認。 */
+  probeSite(): Promise<boolean>;
   notify(title: string, body: string): Promise<void>;
 }
 
@@ -92,7 +93,9 @@ export async function runController(
         return { ok: false, message: e.message, summary: summarize(state, host, instance, nowIso, siteUrl), errors };
       throw e;
     }
-    const { state: next, effects } = reconcile(applied.state, host, instance, plan, nowIso, cfg, published);
+    // 起動中で EC2 が動いているときだけ、CloudFront 経由で届くかを確かめる（準備完了の条件の 1 つ）
+    const edgeReady = applied.state.mode === "STARTING" && instance.state === "running" ? await ports.probeSite() : undefined;
+    const { state: next, effects } = reconcile(applied.state, host, instance, plan, nowIso, cfg, published, edgeReady);
     let committed = next;
     if (effects.beacon !== undefined)
       committed = { ...next, beacon: { seq: state.seq + 1, mode: effects.beacon, updated_at: nowIso, kid: next.beacon?.kid ?? "" } };
@@ -131,13 +134,6 @@ export async function runController(
     };
     if (effects.start) await run("start", () => ports.start());
     if (effects.stop !== "none") await run("stop", () => ports.stop(effects.stop === "force"));
-    if (effects.dnsIp !== undefined) {
-      const ip = effects.dnsIp;
-      await run("dns", async () => {
-        await ports.upsertDns(ip);
-        // 記録（last_dns）は状態と一緒に書いてある。失敗しても 1 時間以内に書き直す（controller.reconcile）
-      });
-    }
     if (effects.beacon !== undefined) {
       const mode = effects.beacon;
       await run("beacon", () => ports.writeBeacon(mode, committed.seq, nowIso));
@@ -176,9 +172,8 @@ const EnvSchema = z.object({
   INSTANCE_ID: z.string().regex(/^i-[0-9a-f]{8,17}$/),
   BEACON_KID: z.string().regex(/^[A-Za-z0-9._-]{1,40}$/),
   BEACON_KEY_PARAM: z.string().startsWith("/"),
-  DNS_ZONE_ID: z.string().optional(),
-  DNS_NAME: z.string().optional(),
-  SITE_URL: z.string().url().optional(),
+  // 公開 URL（CloudFront）。必須: 無いと準備完了を確かめられない（レビュー B10）
+  SITE_URL: z.string().regex(/^https:\/\/d[a-z0-9]{6,32}\.cloudfront\.net$/),
   NOTIFY_WEBHOOK_PARAM: z.string().startsWith("/").optional(),
   CONTROLLER_CONFIG: z.string().optional(),
 });
@@ -197,7 +192,6 @@ export async function handler(event: unknown): Promise<ControllerResult> {
   const beacon = new S3Json(s3, env.BEACON_BUCKET);
   const ec2 = new Ec2(clients.ec2(), env.INSTANCE_ID);
   const ssm = clients.ssm();
-  const r53 = clients.route53();
   const ports: ControllerPorts = {
     readState: () => state.read("state/ops-state.json"),
     writeState: (next, etag) => state.write("state/ops-state.json", next, etag),
@@ -218,10 +212,7 @@ export async function handler(event: unknown): Promise<ControllerResult> {
       }
       await beacon.put("beacon/mode.json", makeBeacon(beaconKey, env.BEACON_KID, mode, seq, now), "application/json", "no-store");
     },
-    upsertDns: async (ip) => {
-      if (env.DNS_ZONE_ID === undefined || env.DNS_NAME === undefined) return;
-      await upsertA(r53, env.DNS_ZONE_ID, env.DNS_NAME, ip);
-    },
+    probeSite: async () => probeSite(env.SITE_URL),
     notify: async (title, body) => {
       const hook = env.NOTIFY_WEBHOOK_PARAM === undefined ? undefined : await secureParameter(ssm, env.NOTIFY_WEBHOOK_PARAM);
       await notifyDiscord(hook, title, body);
@@ -244,8 +235,8 @@ export async function handler(event: unknown): Promise<ControllerResult> {
   console.log(
     JSON.stringify({ action: request.action, ok: result.ok, message: result.message, mode: result.summary["mode"], errors: result.errors }),
   );
-  // 定期実行の失敗（4 回の競合・起動・停止・DNS・ビーコン・通知の失敗）は例外にする: Lambda のエラーの数でアラームが鳴る（黙って止まらない）
-  if (request.action === "tick" && (!result.ok || result.errors.some((e) => /^(start|stop|dns|beacon|notify):/.test(e))))
+  // 定期実行の失敗（4 回の競合・起動・停止・ビーコン・通知の失敗）は例外にする: Lambda のエラーの数でアラームが鳴る（黙って止まらない）
+  if (request.action === "tick" && (!result.ok || result.errors.some((e) => /^(start|stop|beacon|notify):/.test(e))))
     throw new Error(`制御の定期実行が失敗: ${result.message || result.errors.join(" / ").slice(0, 300)}`);
   return result;
 }

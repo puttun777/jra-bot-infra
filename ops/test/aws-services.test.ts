@@ -8,6 +8,7 @@ import {
   FIXED_IPS,
   type HostImages,
   job,
+  logoutTarget,
   NETWORK_APP_RANGE,
   NETWORK_NO_IMDS_RANGE,
   services,
@@ -27,17 +28,23 @@ const img: HostImages = {
 const s = {
   stateBucket: "jrabot-ops-state",
   modelsBucket: "jrabot-models",
-  siteHost: "jrabot.example.com",
+  siteHost: "d1234567890abc.cloudfront.net",
   cognitoIssuer: "https://cognito-idp.ap-northeast-1.amazonaws.com/ap-northeast-1_X",
   cognitoClientId: "abc",
+  cognitoDomain: "owner-auth.auth.ap-northeast-1.amazoncognito.com",
 };
 
 describe("コンテナの定義", () => {
-  it("MySQL はどこにも公開しない。公開は 80/443 と 127.0.0.1 のポートだけ", () => {
+  it("MySQL はどこにも公開しない。公開は 80（CloudFront の VPC origin からだけ届く）と 127.0.0.1 のポートだけ。443・証明書は持たない", () => {
     const all = services(img, s);
     const args = dockerRunArgs(all.mysql, { detach: true, remove: false });
     assert.equal(args.includes("--publish"), false);
-    assert.deepEqual(all.caddy.ports, ["80:80", "443:443"]);
+    assert.deepEqual(all.caddy.ports, ["80:80"]);
+    assert.throws(() => dockerRunArgs({ ...all.caddy, ports: ["443:443"] }, { detach: true, remove: false }), /公開できないポート/);
+    assert.ok(!all.caddy.mounts.some((m) => m.target === "/data" && !m.readOnly), "証明書の保存先（データの EBS）を書かない");
+    assert.deepEqual(all.caddy.envFiles, ["/run/jrabot/env/caddy.env"], "合言葉は env ファイル（引数・docker inspect の env に出さない）");
+    assert.equal(all.caddy.env["SITE_HOST"], s.siteHost);
+    assert.equal(all.caddy.env["LOGOUT_TARGET"], logoutTarget(s));
     for (const n of ["dashboard", "ingest"] as const) for (const p of all[n].ports) assert.match(p, /^127\.0\.0\.1:/);
     assert.throws(() => dockerRunArgs({ ...all.dashboard, ports: ["0.0.0.0:8080:8080"] }, { detach: true, remove: false }), /公開できない/);
     assert.throws(() => dockerRunArgs({ ...all.mysql, ports: ["127.0.0.1:3306:3306"] }, { detach: true, remove: false }), /MySQL/);
@@ -78,8 +85,21 @@ describe("コンテナの定義", () => {
     const c = services(img, s)["oauth2-proxy"].command ?? [];
     assert.ok(c.includes("--pass-authorization-header=true"));
     assert.ok(c.includes("--authenticated-emails-file=/run/secrets/allowed-emails"));
-    assert.ok(c.includes(`--redirect-url=https://${s.siteHost}/oauth2/callback`));
+    assert.ok(c.includes(`--redirect-url=https://${s.siteHost}/oauth2/callback`), "戻り先は CloudFront の公開 URL");
     assert.ok(c.includes("--cookie-secure=true"));
+    assert.ok(c.includes(`--whitelist-domain=${s.cognitoDomain}`), "ログアウトの後に Cognito へ移れる（他の外部へは移さない）");
+    assert.ok(c.includes("--pass-host-header=true"), "Host を変えずに dashboard へ（CSRF の Origin == Host）");
+    assert.ok(!c.some((x) => x.startsWith("--skip-jwt-bearer-tokens")), "クライアントの Bearer でログインを飛ばさない");
+  });
+
+  it("ログアウトは oauth2-proxy の sign_out → Cognito のログアウト → 公開 URL の /（URL エンコードの二重を確かめる）", () => {
+    const t = decodeURIComponent(logoutTarget(s));
+    const u = new URL(t);
+    assert.equal(u.origin, `https://${s.cognitoDomain}`);
+    assert.equal(u.pathname, "/logout");
+    assert.equal(u.searchParams.get("client_id"), s.cognitoClientId);
+    assert.equal(u.searchParams.get("logout_uri"), `https://${s.siteHost}/`);
+    assert.ok(!logoutTarget(s).includes("&"), "rd の値の中の & は符号化する（sign_out の別の引数にならない）");
   });
 
   it("イメージは digest で固定していなければ動かさない", () => {
